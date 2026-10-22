@@ -42,6 +42,7 @@ export type Info = {
   type: string
   title?: string
   status: Status
+  cancellationReason?: "shutdown"
   started_at: number
   completed_at?: number
   output?: string
@@ -228,6 +229,8 @@ export const make = Effect.gen(function* () {
           info: {
             ...job.info,
             status,
+            // Explicit stops settle through cancel() before the interrupted work returns.
+            ...(status === "cancelled" ? { cancellationReason: "shutdown" as const } : {}),
             completed_at,
             ...(Exit.isSuccess(exit) ? { output: exit.value } : {}),
             ...(Exit.isFailure(exit) ? { error: errorText(exit.cause) } : {}),

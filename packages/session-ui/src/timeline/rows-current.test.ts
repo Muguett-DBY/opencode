@@ -157,7 +157,7 @@ describe("current session timeline rows", () => {
       "notice:msg_background",
       "notice:msg_model",
       "assistant-part:part:part:msg_assistant_2:msg_assistant_2:text:0",
-      "notice:msg_restart",
+      "turn-divider:msg_restart",
       "notice:msg_skill",
       "notice:msg_compaction",
     ])

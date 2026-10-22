@@ -7,7 +7,7 @@ export interface Adapter {
   readonly getAgent: () => Effect.Effect<SessionMessage.AgentSelected["agent"] | undefined>
   readonly getModel: () => Effect.Effect<SessionMessage.ModelSelected["model"] | undefined>
   readonly getLocation: () => Effect.Effect<SessionMessage.LocationSwitched["previous"]>
-  readonly getCurrentAssistant: () => Effect.Effect<SessionMessage.Assistant | undefined>
+  readonly getLatestAssistant: () => Effect.Effect<SessionMessage.Assistant | undefined>
   readonly getAssistant: (messageID: SessionMessage.ID) => Effect.Effect<SessionMessage.Assistant | undefined>
   readonly getShell: (shellID: SessionMessage.Shell["shellID"]) => Effect.Effect<SessionMessage.Shell | undefined>
   readonly getCompaction: () => Effect.Effect<SessionMessage.Compaction | undefined>
@@ -53,7 +53,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
     })
 
   const clearCurrentRetry = Effect.gen(function* () {
-    const assistant = yield* adapter.getCurrentAssistant()
+    const assistant = yield* adapter.getLatestAssistant()
     if (!assistant?.retry) return
     yield* adapter.updateAssistant(
       produce(assistant, (draft) => {
@@ -147,7 +147,18 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
       "session.execution.failed": (event) => idle("failed", event.data.error),
       // Shutdown keeps the execution claim and the resumed drain continues the turn.
       "session.execution.interrupted": (event) =>
-        event.data.reason === "shutdown" ? clearCurrentRetry : idle("interrupted"),
+        event.data.reason === "shutdown"
+          ? Effect.gen(function* () {
+              yield* clearCurrentRetry
+              const assistant = yield* adapter.getLatestAssistant()
+              if (!assistant || assistant.error?.type !== "aborted") return
+              yield* adapter.updateAssistant(
+                produce(assistant, (draft) => {
+                  draft.metadata = { ...draft.metadata, interruptionReason: "shutdown" }
+                }),
+              )
+            })
+          : idle("interrupted"),
       "session.instructions.updated": (event) => {
         if (event.data.text === undefined) return Effect.void
         return adapter.appendMessage(
@@ -224,6 +235,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
                 draft.model = castDraft(event.data.model)
                 draft.retry = undefined
                 draft.error = undefined
+                if (draft.metadata) delete draft.metadata.interruptionReason
                 draft.finish = undefined
                 draft.rawFinish = undefined
                 draft.native = undefined
@@ -235,8 +247,8 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
             )
             return
           }
-          const currentAssistant = yield* adapter.getCurrentAssistant()
-          if (currentAssistant) {
+          const currentAssistant = yield* adapter.getLatestAssistant()
+          if (currentAssistant && !currentAssistant.time.completed) {
             yield* adapter.updateAssistant(
               produce(currentAssistant, (draft) => {
                 draft.retry = undefined

@@ -685,6 +685,15 @@ export function AssistantTextContent(props: {
     return !!type && (type.includes("abort") || type.includes("interrupt"))
   }
 
+  const interruption = () =>
+    interrupted()
+      ? i18n.t(
+          props.message.metadata?.interruptionReason === "shutdown"
+            ? "ui.message.serverRestarted"
+            : "ui.message.interrupted",
+        )
+      : ""
+
   const model = createMemo(() => modelLabel(data, i18n, props.message.model))
 
   const duration = createMemo(() => {
@@ -719,7 +728,7 @@ export function AssistantTextContent(props: {
     return [
       ...(mobile() ? [] : [agent ? agent[0]?.toUpperCase() + agent.slice(1) : "", model()]),
       duration(),
-      interrupted() ? i18n.t("ui.message.interrupted") : "",
+      interruption(),
     ]
       .filter(Boolean)
       .join(" \u00B7 ")

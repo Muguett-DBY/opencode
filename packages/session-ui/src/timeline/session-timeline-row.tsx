@@ -461,7 +461,12 @@ export function createSessionTimelineRowRenderer(input: {
       const state = message.metadata?.state
 
       return {
-        label: i18n.t(outcomeNoticeKey(Predicate.isString(state) ? state : undefined), { actor }),
+        label: i18n.t(
+          state === "cancelled" && message.metadata?.cancellationReason === "shutdown"
+            ? "ui.sessionTimeline.notice.stoppedByRestart"
+            : outcomeNoticeKey(Predicate.isString(state) ? state : undefined),
+          { actor },
+        ),
         data: message.description,
       }
     }
@@ -859,7 +864,11 @@ export function createSessionTimelineRowRenderer(input: {
           <div data-slot="session-turn-message-container" class={`w-full ${padding()}`}>
             <div data-slot="session-turn-compaction">
               <div class="py-2">
-                <TimelineSeparator label={i18n.t("ui.message.interrupted")} />
+                <TimelineSeparator
+                  label={i18n.t(
+                    current().reason === "restart" ? "ui.message.serverRestarted" : "ui.message.interrupted",
+                  )}
+                />
               </div>
             </div>
           </div>
