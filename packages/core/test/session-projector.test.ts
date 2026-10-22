@@ -550,7 +550,7 @@ describe("SessionProjector", () => {
     }),
   )
 
-  it.effect("enriches shutdown interruptions without relabelling a previous user stop", () =>
+  it.effect("requires a startup notice before labelling an interruption as a restart", () =>
     Effect.gen(function* () {
       yield* seedSession()
       const bus = yield* Bus.Service
@@ -572,9 +572,45 @@ describe("SessionProjector", () => {
         yield* bus.publish(SessionEvent.Execution.Interrupted, { sessionID, reason })
         // A shutdown between steps must not relabel a previous deliberate stop.
         yield* bus.publish(SessionEvent.Execution.Interrupted, { sessionID, reason: "shutdown" })
+        expect(
+          (yield* store.context(sessionID)).find((message) => message.id === id)?.metadata?.interruptionReason,
+        ).toBeUndefined()
+        yield* bus.publish(SessionEvent.Synthetic, {
+          sessionID,
+          text: "The server restarted while you were working.",
+          metadata: { notice: "restart" },
+        })
         const message = (yield* store.context(sessionID)).find((message) => message.id === id)
-        expect(message?.metadata?.interruptionReason).toBe(reason === "shutdown" ? "shutdown" : undefined)
+        expect(message?.metadata?.interruptionReason).toBe(reason === "shutdown" ? "restart" : undefined)
       }
+    }),
+  )
+
+  it.effect("closes an unfinished assistant when a new step follows an idle boundary", () =>
+    Effect.gen(function* () {
+      yield* seedSession()
+      const bus = yield* Bus.Service
+      const store = yield* SessionStore.Service
+      const previous = SessionMessage.ID.make("msg_unfinished")
+      yield* bus.publish(SessionEvent.Step.Started, {
+        sessionID,
+        assistantMessageID: previous,
+        agent: build,
+        model,
+        started: 0,
+      })
+      yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID })
+      yield* TestClock.adjust("1 second")
+      yield* bus.publish(SessionEvent.Step.Started, {
+        sessionID,
+        assistantMessageID: SessionMessage.ID.make("msg_after_idle"),
+        agent: build,
+        model,
+        started: 1000,
+      })
+      expect((yield* store.context(sessionID)).find((message) => message.id === previous)).toMatchObject({
+        time: { completed: DateTime.makeUnsafe(1000) },
+      })
     }),
   )
 

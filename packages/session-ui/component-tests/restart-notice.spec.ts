@@ -1,6 +1,6 @@
 import { expect, story } from "../../storybook/playwright/story"
 
-for (const scenario of ["shutdown", "crash", "user", "legacy"]) {
+for (const scenario of ["shutdown", "crash", "user", "declined", "legacy"]) {
   story(`shows the recorded interruption cause: ${scenario}`, async ({ mount }) => {
     const timeline = await mount("current-session-timeline-rows--restart-notice", { args: { scenario } })
     const restarted = scenario === "shutdown" || scenario === "crash"
@@ -10,10 +10,6 @@ for (const scenario of ["shutdown", "crash", "user", "legacy"]) {
         .getByText(restarted ? "Server restarted" : "Interrupted", { exact: true }),
     ).toHaveCount(1)
     await expect(timeline.getByText(restarted ? "Interrupted" : "Server restarted", { exact: true })).toHaveCount(0)
-    await expect(
-      timeline.getByText(scenario === "shutdown" ? "General stopped by server restart" : "General cancelled", {
-        exact: true,
-      }),
-    ).toBeVisible()
+    await expect(timeline.getByText("General cancelled", { exact: true })).toBeVisible()
   })
 }

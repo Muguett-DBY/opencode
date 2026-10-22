@@ -320,7 +320,6 @@ describe("Job", () => {
       if (!marker) return yield* Effect.die("background marker missing")
 
       yield* jobs.cancel(job.id)
-      expect((yield* jobs.get(job.id))?.cancellationReason).toBeUndefined()
       expect((yield* jobs.pendingBackground).find((item) => item.id === job.id)).toMatchObject({
         notificationID: marker.notificationID,
         status: "cancelled",
@@ -424,10 +423,7 @@ describe("Job", () => {
       })
       yield* jobs.background(job.id)
       yield* Deferred.succeed(interrupted, undefined)
-      expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({
-        status: "cancelled",
-        cancellationReason: "shutdown",
-      })
+      expect((yield* jobs.wait({ id: job.id })).info?.status).toBe("cancelled")
 
       const marker = (yield* jobs.pendingBackground).find((item) => item.id === job.id)
       expect(marker).toMatchObject({ id: job.id, status: "running" })

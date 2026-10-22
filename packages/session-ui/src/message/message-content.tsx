@@ -688,7 +688,7 @@ export function AssistantTextContent(props: {
   const interruption = () =>
     interrupted()
       ? i18n.t(
-          props.message.metadata?.interruptionReason === "shutdown"
+          props.message.metadata?.interruptionReason === "restart"
             ? "ui.message.serverRestarted"
             : "ui.message.interrupted",
         )

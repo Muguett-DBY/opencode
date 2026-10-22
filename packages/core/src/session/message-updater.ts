@@ -7,7 +7,9 @@ export interface Adapter {
   readonly getAgent: () => Effect.Effect<SessionMessage.AgentSelected["agent"] | undefined>
   readonly getModel: () => Effect.Effect<SessionMessage.ModelSelected["model"] | undefined>
   readonly getLocation: () => Effect.Effect<SessionMessage.LocationSwitched["previous"]>
-  readonly getLatestAssistant: () => Effect.Effect<SessionMessage.Assistant | undefined>
+  readonly getLatestAssistant: (options?: {
+    ignoreIdle?: boolean
+  }) => Effect.Effect<SessionMessage.Assistant | undefined>
   readonly getAssistant: (messageID: SessionMessage.ID) => Effect.Effect<SessionMessage.Assistant | undefined>
   readonly getShell: (shellID: SessionMessage.Shell["shellID"]) => Effect.Effect<SessionMessage.Shell | undefined>
   readonly getCompaction: () => Effect.Effect<SessionMessage.Compaction | undefined>
@@ -147,18 +149,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
       "session.execution.failed": (event) => idle("failed", event.data.error),
       // Shutdown keeps the execution claim and the resumed drain continues the turn.
       "session.execution.interrupted": (event) =>
-        event.data.reason === "shutdown"
-          ? Effect.gen(function* () {
-              yield* clearCurrentRetry
-              const assistant = yield* adapter.getLatestAssistant()
-              if (!assistant || assistant.error?.type !== "aborted") return
-              yield* adapter.updateAssistant(
-                produce(assistant, (draft) => {
-                  draft.metadata = { ...draft.metadata, interruptionReason: "shutdown" }
-                }),
-              )
-            })
-          : idle("interrupted"),
+        event.data.reason === "shutdown" ? clearCurrentRetry : idle("interrupted"),
       "session.instructions.updated": (event) => {
         if (event.data.text === undefined) return Effect.void
         return adapter.appendMessage(
@@ -172,18 +163,29 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
           }),
         )
       },
-      "session.synthetic": (event) => {
-        return adapter.appendMessage(
-          SessionMessage.Synthetic.make({
-            text: event.data.text,
-            description: event.data.description,
-            metadata: event.data.metadata,
-            id: SessionMessage.ID.fromEvent(event.id),
-            type: "synthetic",
-            time: { created },
-          }),
-        )
-      },
+      "session.synthetic": (event) =>
+        Effect.gen(function* () {
+          // Only startup recovery proves that an interrupted execution crossed a restart.
+          if (event.data.metadata?.notice === "restart") {
+            const assistant = yield* adapter.getLatestAssistant()
+            if (assistant?.error?.type === "aborted")
+              yield* adapter.updateAssistant(
+                produce(assistant, (draft) => {
+                  draft.metadata = { ...draft.metadata, interruptionReason: "restart" }
+                }),
+              )
+          }
+          yield* adapter.appendMessage(
+            SessionMessage.Synthetic.make({
+              text: event.data.text,
+              description: event.data.description,
+              metadata: event.data.metadata,
+              id: SessionMessage.ID.fromEvent(event.id),
+              type: "synthetic",
+              time: { created },
+            }),
+          )
+        }),
       "session.skill.activated": (event) => {
         return adapter.appendMessage(
           SessionMessage.Skill.make({
@@ -247,7 +249,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
             )
             return
           }
-          const currentAssistant = yield* adapter.getLatestAssistant()
+          const currentAssistant = yield* adapter.getLatestAssistant({ ignoreIdle: true })
           if (currentAssistant && !currentAssistant.time.completed) {
             yield* adapter.updateAssistant(
               produce(currentAssistant, (draft) => {

@@ -858,6 +858,12 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.synthetic":
+        if (event.data.metadata?.notice === "restart")
+          message.update(event.data.sessionID, (draft) => {
+            const latest = draft.findLast((item) => item.type === "assistant" || item.type === "idle")
+            if (latest?.type === "assistant" && latest.error?.type === "aborted")
+              latest.metadata = { ...latest.metadata, interruptionReason: "restart" }
+          })
         message.insert(event.data.sessionID, {
           id: SessionMessage.ID.fromEvent(event.id),
           type: "synthetic",
@@ -1091,10 +1097,6 @@ export function createData(config: CreateDataInput) {
         message.update(event.data.sessionID, (draft) => {
           const currentAssistant = message.activeAssistant(draft)
           if (currentAssistant) currentAssistant.retry = undefined
-          if (event.type !== "session.execution.interrupted" || event.data.reason !== "shutdown") return
-          const latest = draft.findLast((item) => item.type === "assistant" || item.type === "idle")
-          if (latest?.type === "assistant" && latest.error?.type === "aborted")
-            latest.metadata = { ...latest.metadata, interruptionReason: "shutdown" }
         })
         if (event.type === "session.execution.interrupted" && event.data.reason === "shutdown") return
         // Mirror the projected idle marker so turn boundaries match before the next message read.

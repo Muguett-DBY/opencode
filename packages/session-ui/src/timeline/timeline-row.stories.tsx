@@ -534,13 +534,21 @@ const InterruptedTurn = {
   ),
 }
 
+const RESTART_STORY_INTERRUPTION = {
+  shutdown: "restart",
+  crash: undefined,
+  user: undefined,
+  declined: "shutdown",
+  legacy: undefined,
+}
+
 export const RestartNotice = {
   args: { scenario: "shutdown" },
-  argTypes: { scenario: { control: "select", options: ["shutdown", "crash", "user", "legacy"] } },
-  render: (args: { scenario: string }) => (
+  argTypes: { scenario: { control: "select", options: ["shutdown", "crash", "user", "declined", "legacy"] } },
+  render: (args: { scenario: keyof typeof RESTART_STORY_INTERRUPTION }) => (
     <CurrentSessionTimelineStory
       title={args.scenario === "legacy" ? "Before" : "After"}
-      description="Server restart and deliberate stop use their recorded cause."
+      description="Only a startup recovery notice confirms a server restart."
       document={{
         ...thinkingDocument,
         status: { type: "idle" },
@@ -552,12 +560,20 @@ export const RestartNotice = {
             agent: "build",
             model: STORY_MODEL,
             content: [{ type: "text", text: "The review is running in the background." }],
-            ...(args.scenario === "crash" ? {} : { error: { type: "aborted", message: "Step interrupted" } }),
-            ...(args.scenario === "shutdown" ? { metadata: { interruptionReason: "shutdown" } } : {}),
-            time: { created: STORY_TIME + 1, ...(args.scenario === "crash" ? {} : { completed: STORY_TIME + 2 }) },
+            error: args.scenario === "crash" ? undefined : { type: "aborted", message: "Step interrupted" },
+            metadata: { interruptionReason: RESTART_STORY_INTERRUPTION[args.scenario] },
+            time: { created: STORY_TIME + 1, completed: args.scenario === "crash" ? undefined : STORY_TIME + 2 },
           },
           ...(["shutdown", "crash"].includes(args.scenario)
             ? [
+                {
+                  id: "msg_restart_instructions",
+                  type: "system" as const,
+                  text: "Updated instructions",
+                  description: "Instructions updated",
+                  metadata: { notice: "instructions" },
+                  time: { created: STORY_TIME + 2 },
+                },
                 {
                   id: "msg_restart_notice",
                   type: "synthetic" as const,
@@ -578,7 +594,8 @@ export const RestartNotice = {
               agent: "General",
               childID: "ses_restart_child",
               state: "cancelled",
-              ...(args.scenario === "shutdown" ? { cancellationReason: "shutdown" } : {}),
+              // Legacy shutdown metadata is not proof of a restart, even on a child notice.
+              cancellationReason: args.scenario === "declined" ? "shutdown" : undefined,
             },
             time: { created: STORY_TIME + 4 },
           },

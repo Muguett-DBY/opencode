@@ -268,7 +268,6 @@ const source = {
   "ui.sessionTimeline.notice.movedTooltip": "Session working directory changed",
   "ui.sessionTimeline.notice.failed": "{{actor}} failed",
   "ui.sessionTimeline.notice.cancelled": "{{actor}} cancelled",
-  "ui.sessionTimeline.notice.stoppedByRestart": "{{actor}} stopped by server restart",
   "ui.sessionTimeline.notice.finished": "{{actor}} finished",
   "ui.sessionTimeline.notice.instructionsUpdated": "Instructions updated",
   "ui.sessionTimeline.notice.restart": "Continuing after restart",

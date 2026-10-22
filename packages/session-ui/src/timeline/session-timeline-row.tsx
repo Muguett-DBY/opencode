@@ -461,12 +461,7 @@ export function createSessionTimelineRowRenderer(input: {
       const state = message.metadata?.state
 
       return {
-        label: i18n.t(
-          state === "cancelled" && message.metadata?.cancellationReason === "shutdown"
-            ? "ui.sessionTimeline.notice.stoppedByRestart"
-            : outcomeNoticeKey(Predicate.isString(state) ? state : undefined),
-          { actor },
-        ),
+        label: i18n.t(outcomeNoticeKey(Predicate.isString(state) ? state : undefined), { actor }),
         data: message.description,
       }
     }
