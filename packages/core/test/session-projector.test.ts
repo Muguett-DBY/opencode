@@ -38,6 +38,11 @@ import { Document, Info } from "@opencode/schema/config"
 import { ConfigExperimental } from "@opencode/schema/config/experimental"
 import { SessionMediaBlob } from "@opencode/core/session/media-blob"
 import { SessionTransfer } from "@opencode/core/session/transfer"
+import { Database as SqliteDatabase } from "bun:sqlite"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { migrateMediaBlobs } from "../script/migrate-media-blobs"
 import { testEffect } from "./lib/effect"
 import { Snapshot } from "@opencode/core/snapshot"
 
@@ -1628,6 +1633,212 @@ describe("SessionProjector", () => {
       const listed = yield* inbox.list(sessionID)
       expect(listed[0]).toMatchObject({ payload: { files: [{ data: placeholder, mime: "text/plain" }] } })
       expect(JSON.stringify([messages, listed])).not.toContain(hash)
+    }),
+  )
+
+  it.effect("backfills legacy inline rows idempotently, populates media_ref, batches safely, and fails fast when locked", () =>
+    Effect.gen(function* () {
+      const tmpDir = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-media-backfill-")))
+      const dbPath = path.join(tmpDir, "test.db")
+      const sqlite = new SqliteDatabase(dbPath)
+      try {
+        sqlite.exec(`
+          PRAGMA journal_mode = WAL;
+          CREATE TABLE session_v2 (
+            id text PRIMARY KEY
+          );
+          CREATE TABLE session_message (
+            id text PRIMARY KEY,
+            session_id text NOT NULL,
+            type text NOT NULL,
+            seq integer NOT NULL,
+            time_created integer NOT NULL,
+            time_updated integer NOT NULL,
+            data text NOT NULL
+          );
+          CREATE TABLE session_inbox (
+            id text PRIMARY KEY,
+            session_id text NOT NULL,
+            type text NOT NULL,
+            payload text NOT NULL,
+            delivery text NOT NULL,
+            enqueued_seq integer NOT NULL,
+            time_created integer NOT NULL
+          );
+          INSERT INTO session_v2 VALUES ('ses_1');
+        `)
+
+        const photon = yield* Effect.promise(() => import("@silvia-odwyer/photon-node"))
+        const pixels = new Uint8Array(2200 * 1100 * 4)
+        pixels.fill(180)
+        const img = new photon.PhotonImage(pixels, 2200, 1100)
+        const oversizedBase64 = Buffer.from(img.get_bytes()).toString("base64")
+        img.free()
+
+        const raw = Buffer.from("legacy-inline-attachment-bytes")
+        const base64 = raw.toString("base64")
+        const userRow = {
+          text: "legacy user",
+          files: [
+            { data: base64, mime: "application/pdf", source: { type: "inline" }, name: "legacy.pdf" },
+            { data: oversizedBase64, mime: "image/png", source: { type: "inline" }, name: "legacy-huge.png" },
+          ],
+          time: { created: 0 },
+        }
+        const assistantRowData = {
+          agent: "build",
+          model: { id: "model", providerID: "provider" },
+          content: [
+            {
+              type: "tool",
+              id: "call_1",
+              name: "read",
+              executed: true,
+              state: {
+                status: "completed",
+                input: {},
+                content: [{ type: "file", uri: `data:application/pdf;base64,${base64}`, mime: "application/pdf" }],
+              },
+              time: { created: 0, ran: 0, completed: 0 },
+            },
+          ],
+          time: { created: 0 },
+        }
+        sqlite
+          .query(`INSERT INTO session_message VALUES (?, 'ses_1', 'user', 1, 0, 0, ?)`)
+          .run("msg_1", JSON.stringify(userRow))
+        sqlite
+          .query(`INSERT INTO session_message VALUES (?, 'ses_1', 'assistant', 2, 0, 0, ?)`)
+          .run("msg_2", JSON.stringify(assistantRowData))
+        sqlite
+          .query(`INSERT INTO session_inbox VALUES (?, 'ses_1', 'user', ?, 'steer', 3, 0)`)
+          .run("inb_1", JSON.stringify(userRow))
+
+        const first = yield* Effect.promise(() =>
+          migrateMediaBlobs(sqlite, { now: 123, maxBatchRows: 1 }),
+        )
+        expect(first.migratedRows).toBe(3)
+        expect(first.blobsStored).toBe(2)
+        expect(first.refsRecorded).toBe(5)
+
+        const storedBlobs = sqlite
+          .query<{ hash: string; mime: string; bytes: number; width: number | null; height: number | null }, []>(
+            `SELECT hash, mime, bytes, width, height FROM media_blob`,
+          )
+          .all()
+        expect(storedBlobs).toHaveLength(2)
+        const imageBlob = storedBlobs.find((b) => b.width !== null)
+        expect(imageBlob?.width).toBe(2000)
+        expect(imageBlob?.height).toBe(1000)
+
+        const storedRefs = sqlite
+          .query<{ session_id: string; message_id: string; hash: string; seq: number }, []>(
+            `SELECT session_id, message_id, hash, seq FROM media_ref ORDER BY seq ASC`,
+          )
+          .all()
+        expect(storedRefs).toHaveLength(5)
+        expect(storedRefs.map((r) => [r.message_id, r.seq])).toEqual([
+          ["msg_1", 1],
+          ["msg_1", 1],
+          ["msg_2", 2],
+          ["inb_1", 3],
+          ["inb_1", 3],
+        ])
+
+        const second = yield* Effect.promise(() => migrateMediaBlobs(sqlite, { now: 456 }))
+        expect(second.migratedRows).toBe(0)
+        expect(second.skippedChanged).toBe(0)
+        expect(second.blobsStored).toBe(0)
+
+        const allRowsJson = () =>
+          JSON.stringify([
+            sqlite.query<{ data: string }, []>(`SELECT data FROM session_message`).all(),
+            sqlite.query<{ payload: string }, []>(`SELECT payload FROM session_inbox`).all(),
+          ])
+        const pdfHash = SessionMediaBlob.hashBytes(raw)
+        expect(allRowsJson()).toContain(`media:${pdfHash}`)
+        expect(allRowsJson()).not.toContain("/api/")
+
+        // Rows written by early builds with `/api/media/<hash>` refs are rewritten to `media:<hash>`.
+        sqlite
+          .query(`INSERT INTO session_message VALUES ('msg_legacy_ref', 'ses_1', 'user', 10, 0, 0, ?)`)
+          .run(
+            JSON.stringify({
+              text: "legacy ref",
+              files: [{ uri: `/api/media/${pdfHash}`, mime: "application/pdf", bytes: raw.byteLength }],
+              time: { created: 0 },
+            }),
+          )
+        sqlite
+          .query(`INSERT INTO session_message VALUES ('msg_legacy_tool_ref', 'ses_1', 'assistant', 11, 0, 0, ?)`)
+          .run(
+            JSON.stringify({
+              ...assistantRowData,
+              content: [
+                {
+                  ...assistantRowData.content[0],
+                  state: {
+                    ...assistantRowData.content[0]!.state,
+                    content: [{ type: "file", uri: `/api/media/${pdfHash}`, mime: "application/pdf" }],
+                  },
+                },
+              ],
+            }),
+          )
+        const legacy = yield* Effect.promise(() => migrateMediaBlobs(sqlite, { now: 789 }))
+        expect(legacy.migratedRows).toBe(2)
+        expect(legacy.blobsStored).toBe(0)
+        expect(allRowsJson()).not.toContain("/api/")
+        expect(
+          sqlite
+            .query<{ message_id: string }, []>(
+              `SELECT message_id FROM media_ref WHERE message_id LIKE 'msg_legacy%' ORDER BY seq ASC`,
+            )
+            .all()
+            .map((r) => r.message_id),
+        ).toEqual(["msg_legacy_ref", "msg_legacy_tool_ref"])
+
+        // If a row changes between the unlocked read and the batch transaction, skip it and count it instead of overwriting
+        sqlite
+          .query(`INSERT INTO session_message VALUES ('msg_race', 'ses_1', 'user', 4, 0, 0, ?)`)
+          .run(JSON.stringify(userRow))
+        const raced = yield* Effect.promise(() =>
+          migrateMediaBlobs(sqlite, {
+            onBeforeBatchCommit: (ids) => {
+              if (ids.includes("msg_race")) {
+                sqlite
+                  .query(`UPDATE session_message SET data = ? WHERE id = 'msg_race'`)
+                  .run(JSON.stringify({ ...userRow, text: "concurrently updated" }))
+              }
+            },
+          }),
+        )
+        expect(raced.skippedChanged).toBe(1)
+        const racedRow = sqlite
+          .query<{ data: string }, []>(`SELECT data FROM session_message WHERE id = 'msg_race'`)
+          .get()
+        expect(JSON.parse(racedRow!.data).text).toBe("concurrently updated")
+        expect(JSON.parse(racedRow!.data).files[0].data).toBe(base64)
+
+        // Fail fast if another connection holds a BEGIN IMMEDIATE write lock
+        const locker = new SqliteDatabase(dbPath)
+        try {
+          locker.exec("BEGIN IMMEDIATE;")
+          const lockError = yield* Effect.promise(() =>
+            migrateMediaBlobs(sqlite, { busyTimeoutMs: 25 }).then(
+              () => undefined,
+              (err: unknown) => err,
+            ),
+          )
+          expect(lockError).toBeInstanceOf(Error)
+          expect(String(lockError)).toContain("locked")
+        } finally {
+          locker.close()
+        }
+      } finally {
+        sqlite.close()
+        yield* Effect.promise(() => fs.rm(tmpDir, { recursive: true, force: true }))
+      }
     }),
   )
 })

@@ -3,7 +3,19 @@ export * as Image from "./image.js"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { FileSystem } from "./filesystem.js"
+import { loadPhoton, make, shrinkSync } from "./image/photon.js"
 import { State } from "./state.js"
+
+export { shrinkSync }
+
+export const preload = loadPhoton.pipe(Effect.orElseSucceed(() => undefined))
+
+export const DEFAULT_LIMITS: Limits = {
+  autoResize: true,
+  maxWidth: 2_000,
+  maxHeight: 2_000,
+  maxBase64Bytes: 5 * 1024 * 1024,
+}
 
 export class ResizerUnavailableError extends Schema.TaggedError<ResizerUnavailableError>()(
   "Image.ResizerUnavailableError",
@@ -60,12 +72,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const state = State.create<Limits, Editor>({
       name: "image",
-      initial: () => ({
-        autoResize: true,
-        maxWidth: 2_000,
-        maxHeight: 2_000,
-        maxBase64Bytes: 5 * 1024 * 1024,
-      }),
+      initial: () => ({ ...DEFAULT_LIMITS }),
       editor: (editor) => ({
         configure: (limits) => {
           if (limits.autoResize !== undefined) editor.autoResize = limits.autoResize
@@ -75,12 +82,7 @@ const layer = Layer.effect(
         },
       }),
     })
-    const loadAdapter = yield* Effect.cached(
-      Effect.tryPromise({
-        try: () => import("./image/photon.js"),
-        catch: () => new ResizerUnavailableError(),
-      }).pipe(Effect.flatMap((adapter) => adapter.make)),
-    )
+    const loadAdapter = yield* Effect.cached(make)
     const normalize = Effect.fn("Image.normalize")(function* (
       resource: string,
       content: FileSystem.Content & { readonly encoding: "base64" },
