@@ -1000,7 +1000,7 @@ describe("SessionProjector", () => {
     }),
   )
 
-  it.effect("hydrates externalized media_blob references on message and inbox reads", () =>
+  it.effect("hydrates media:<hash> refs (and legacy /api/media/<hash> refs) on message and inbox reads", () =>
     Effect.gen(function* () {
       const db = yield* seedSession()
       const bus = yield* Bus.Service
@@ -1010,7 +1010,9 @@ describe("SessionProjector", () => {
       const rawBytes = Buffer.from("externalized-media-payload")
       const base64 = rawBytes.toString("base64")
       const hash = "a".repeat(64)
-      const uri = `/api/media/${hash}`
+      const uri = `media:${hash}`
+      // Rows written by early builds carry the old URL form; reads still resolve it.
+      const legacyUri = `/api/media/${hash}`
 
       yield* db
         .insert(MediaBlobTable)
@@ -1062,7 +1064,9 @@ describe("SessionProjector", () => {
                   state: {
                     status: "completed",
                     input: { path: "spec.pdf" },
-                    content: [{ type: "file", uri, mime: "application/pdf", bytes: rawBytes.byteLength, name: "spec.pdf" }] as any,
+                    content: [
+                      { type: "file", uri: legacyUri, mime: "application/pdf", bytes: rawBytes.byteLength, name: "spec.pdf" },
+                    ] as any,
                   },
                   time: { created: 2, ran: 2, completed: 2 },
                 },

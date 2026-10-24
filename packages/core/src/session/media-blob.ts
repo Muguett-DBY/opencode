@@ -1,5 +1,6 @@
 export * as SessionMediaBlob from "./media-blob.js"
 
+import { createHash } from "node:crypto"
 import { inArray } from "drizzle-orm"
 import { Effect } from "effect"
 import type { Database } from "../database/database.js"
@@ -10,7 +11,19 @@ type MessageRow = typeof SessionMessageTable.$inferSelect
 type InboxRow = typeof SessionInboxTable.$inferSelect
 type Data = MessageRow["data"] | InboxRow["payload"]
 
-export const URI_PREFIX = "/api/media/"
+/** A blob's hash is the lowercase hex SHA-256 of its raw (decoded) bytes. */
+export const hashBytes = (raw: Uint8Array) => createHash("sha256").update(raw).digest("hex")
+export const HASH_PATTERN = /^[0-9a-f]{64}$/
+
+/**
+ * Stored rows reference a blob as `media:<hash>` in the existing `uri` field, next to `data:` and `file:` URIs.
+ * The ref names no server route; clients that opt in see a fetchable path only in the response projection.
+ */
+export const REF_SCHEME = "media:"
+// Written only by early builds of this feature; still read, never written.
+const LEGACY_REF_PREFIX = "/api/media/"
+
+export const ref = (hash: string) => `${REF_SCHEME}${hash}`
 
 type StoredUserFile = {
   readonly data?: string
@@ -36,8 +49,14 @@ type StoredToolFile = {
   readonly name?: string
 }
 
-export const hashFromUri = (uri: string | undefined) =>
-  uri?.startsWith(URI_PREFIX) ? uri.slice(URI_PREFIX.length) : undefined
+export const hashFromUri = (uri: string | undefined) => {
+  const hash = uri?.startsWith(REF_SCHEME)
+    ? uri.slice(REF_SCHEME.length)
+    : uri?.startsWith(LEGACY_REF_PREFIX)
+      ? uri.slice(LEGACY_REF_PREFIX.length)
+      : undefined
+  return hash !== undefined && HASH_PATTERN.test(hash) ? hash : undefined
+}
 
 export function collectHashes(data: Data, target = new Set<string>()) {
   if ("files" in data && data.files) {
@@ -121,7 +140,7 @@ const loadBlobs = Effect.fnUntraced(function* (db: DatabaseService, hashes: Read
   return blobs
 })
 
-/** Restores inline base64 media for any `/api/media/<hash>` refs in `rows`. Rows without refs are returned untouched. */
+/** Restores inline base64 media for any `media:<hash>` refs in `rows`. Rows without refs are returned untouched. */
 export const hydrate = Effect.fnUntraced(function* (db: DatabaseService, rows: ReadonlyArray<MessageRow>) {
   const hashes = new Set<string>()
   for (const row of rows) collectHashes(row.data, hashes)
@@ -133,7 +152,7 @@ export const hydrate = Effect.fnUntraced(function* (db: DatabaseService, rows: R
   })
 })
 
-/** Restores inline base64 media for any `/api/media/<hash>` refs in `session_inbox` rows. */
+/** Restores inline base64 media for any `media:<hash>` refs in `session_inbox` rows. */
 export const hydrateInbox = Effect.fnUntraced(function* (db: DatabaseService, rows: ReadonlyArray<InboxRow>) {
   const hashes = new Set<string>()
   for (const row of rows) collectHashes(row.payload, hashes)
