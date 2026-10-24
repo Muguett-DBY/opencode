@@ -15,6 +15,10 @@ export class Info extends Schema.Class<Info>("ConfigExperimental.Info")({
     description:
       "Enable experimental background compaction: summarize the conversation in the background as it nears the compaction threshold, so automatic compaction does not wait for the summary. Background summaries that are never used still cost tokens. Defaults to false.",
   }),
+  mediaBlob: Schema.Boolean.pipe(optional).annotate({
+    description:
+      "Store session media in the deduplicated media_blob table instead of inline in message rows. Defaults to false.",
+  }),
   subagent_depth: NonNegativeInt.pipe(optional).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1.",
   }),

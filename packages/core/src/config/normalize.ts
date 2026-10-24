@@ -485,6 +485,16 @@ function normalizeExperimental(
         )
         if (value !== undefined) result.background_compaction = value
       }
+      if (own(experimental, "mediaBlob") || own(experimental, "media_blob")) {
+        const key = own(experimental, "mediaBlob") ? "mediaBlob" : "media_blob"
+        const value = decodeEncoded(
+          ConfigExperimental.Info.fields.mediaBlob,
+          experimental[key],
+          ["experimental", key],
+          diagnostics,
+        )
+        if (value !== undefined) result.mediaBlob = value
+      }
       if (own(experimental, "subagent_depth")) {
         const value = decodeEncoded(
           ConfigExperimental.Info.fields.subagent_depth,

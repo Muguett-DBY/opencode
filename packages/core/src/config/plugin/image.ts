@@ -4,6 +4,7 @@ import { define } from "@opencode/plugin/effect/plugin"
 import { Effect } from "effect"
 import { Config } from "../../config.js"
 import { Image } from "../../image.js"
+import { SessionMediaBlob } from "../../session/media-blob.js"
 import { ConfigEntryObserver } from "./entry-observer.js"
 
 export const Plugin = define({
@@ -13,6 +14,8 @@ export const Plugin = define({
     const image = yield* Image.Service
     const loaded = yield* ConfigEntryObserver.observe(config, ctx.event, image.reload())
     yield* image.transform((editor) => {
+      const mediaBlob = Config.latest(loaded.entries, "experimental")?.mediaBlob
+      if (mediaBlob !== undefined) SessionMediaBlob.configure({ enabled: mediaBlob })
       for (const entry of loaded.entries) {
         if (entry.type !== "document") continue
         const configured = entry.info.media?.image

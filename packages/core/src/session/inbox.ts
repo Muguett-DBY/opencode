@@ -193,13 +193,19 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
         item: request.item,
       })
       .pipe(
-        Effect.map((event) =>
-          Info.make({
-            id: request.id,
-            sessionID: request.sessionID,
-            time: { created: DateTime.makeUnsafe(event.created) },
-            ...request.item,
-          }),
+        Effect.flatMap((event) =>
+          find(db, request.id).pipe(
+            Effect.map(
+              (stored) =>
+                stored ??
+                Info.make({
+                  id: request.id,
+                  sessionID: request.sessionID,
+                  time: { created: DateTime.makeUnsafe(event.created) },
+                  ...request.item,
+                }),
+            ),
+          ),
         ),
         Effect.catchDefect((defect) =>
           defect instanceof LifecycleConflict
@@ -304,20 +310,25 @@ export const projectAdmitted = Effect.fn("SessionInbox.projectAdmitted")(functio
     .get()
     .pipe(Effect.orDie)
   if (message !== undefined) return yield* Effect.die(new LifecycleConflict({ id: request.id }))
+  const payload =
+    request.item.type === "user"
+      ? yield* SessionMediaBlob.externalize(db, encodeUser(request.item.payload), {
+          sessionID: request.sessionID,
+          messageID: request.id,
+          seq: request.enqueuedSeq,
+        })
+      : request.item.type === "synthetic"
+        ? encodeSynthetic(request.item.payload)
+        : request.item.type === "compaction"
+          ? encodeCompaction(request.item.payload)
+          : encodeMove(request.item.payload)
   const stored = yield* db
     .insert(SessionInboxTable)
     .values({
       id: request.id,
       session_id: request.sessionID,
       type: request.item.type,
-      payload:
-        request.item.type === "user"
-          ? encodeUser(request.item.payload)
-          : request.item.type === "synthetic"
-            ? encodeSynthetic(request.item.payload)
-            : request.item.type === "compaction"
-              ? encodeCompaction(request.item.payload)
-              : encodeMove(request.item.payload),
+      payload,
       delivery: request.item.delivery,
       enqueued_seq: request.enqueuedSeq,
       time_created: request.timeCreated,
@@ -345,8 +356,9 @@ export const projectDelivered = Effect.fn("SessionInbox.projectDelivered")(funct
     .get()
     .pipe(Effect.orDie)
   if (!deleted) return yield* Effect.die(new LifecycleConflict({ id: input.id }))
+  const hadRefs = SessionMediaBlob.hasRefs(deleted.payload)
   const [hydrated] = yield* SessionMediaBlob.hydrateInbox(db, [deleted])
-  return fromRow(hydrated!)
+  return Object.assign(fromRow(hydrated!), { hadRefs })
 })
 
 export const projectCancelled = Effect.fn("SessionInbox.projectCancelled")(function* (
@@ -366,6 +378,8 @@ export const projectCancelled = Effect.fn("SessionInbox.projectCancelled")(funct
     .get()
     .pipe(Effect.orDie)
   if (!deleted) return yield* Effect.die(new LifecycleConflict({ id: input.id }))
+  yield* SessionMediaBlob.removeMessageRefs(db, input.sessionID, input.id)
+  yield* SessionMediaBlob.sweep(db)
 })
 
 const projectDelivery = Effect.fn("SessionInbox.projectDelivery")(function* (

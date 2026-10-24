@@ -18,6 +18,7 @@ import { AbsolutePath, RelativePath } from "../schema.js"
 import { Session } from "../session.js"
 import { Slug } from "../util/slug.js"
 import { SessionEvent } from "./event.js"
+import { SessionMediaBlob } from "./media-blob.js"
 import { SessionMessage } from "./message.js"
 import { SessionProjector } from "./projector.js"
 import { SessionMessageTable, SessionTable } from "./sql.js"
@@ -110,7 +111,17 @@ const layer = Layer.effect(
               commit: (seq) =>
                 Effect.gen(function* () {
                   if (messages.length > 0) {
-                    yield* db.insert(SessionMessageTable).values(messages).run().pipe(Effect.orDie)
+                    const externalized = yield* Effect.forEach(messages, (message) =>
+                      SessionMediaBlob.externalize(db, message.data).pipe(Effect.map((data) => ({ ...message, data }))),
+                    )
+                    yield* db.insert(SessionMessageTable).values(externalized).run().pipe(Effect.orDie)
+                    for (const message of externalized) {
+                      yield* SessionMediaBlob.recordRefs(
+                        db,
+                        { sessionID, messageID: message.id, seq: message.seq },
+                        message.data,
+                      )
+                    }
                     yield* Bus.reserveSequence(db, sessionID, seq + messages.length)
                   }
                   yield* db
