@@ -10,6 +10,9 @@ import { TestClock } from "effect/testing"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { LayerNode } from "@opencode/util/effect/layer-node"
+import { AppProcess } from "@opencode/util/process"
+import { PortOwner } from "../src/services/port-owner"
 import { ServiceConfig } from "../src/services/service-config"
 import { ServiceRegistration } from "../src/services/service-registration"
 import { isolatedEnv, transpilerCache } from "./fixture/environment"
@@ -190,6 +193,48 @@ test("service config manages environment variables", async () => {
   } finally {
     await fs.rm(root, { recursive: true, force: true })
   }
+})
+
+test("saved service environment cannot move the registration's state directory", async () => {
+  expect(ServiceConfig.processEnv(undefined)).toBeUndefined()
+  expect(ServiceConfig.processEnv({ XDG_STATE_HOME: "/custom/state", XDG_DATA_HOME: "/custom/data", A: "1" })).toEqual({
+    XDG_DATA_HOME: "/custom/data",
+    A: "1",
+  })
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-env-state-"))
+  const layer = Global.layerWith({ config: path.join(root, "config"), state: path.join(root, "state") })
+  try {
+    await fs.mkdir(path.join(root, "config"), { recursive: true })
+    await Bun.write(
+      path.join(root, "config", ServiceConfig.filename()),
+      JSON.stringify({ env: { XDG_STATE_HOME: path.join(root, "elsewhere"), A: "1" } }),
+    )
+    const options = await Effect.runPromise(
+      ServiceConfig.options().pipe(Effect.provide(layer), Effect.provide(NodeFileSystem.layer)),
+    )
+    expect(options.env).toEqual({ A: "1" })
+    expect(options.file).toBe(path.join(root, "state", ServiceConfig.filename()))
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(process.platform === "win32" || !Bun.which("lsof"))("port owner names the listening process", async () => {
+  using listener = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() })
+  const owner = await Effect.runPromise(
+    PortOwner.describe(listener.port ?? 0).pipe(Effect.provide(LayerNode.compile(AppProcess.node))),
+  )
+  expect(owner).toStartWith(`PID ${process.pid} (`)
+})
+
+test.skipIf(process.platform === "win32")("port owner is unknown for a free port", async () => {
+  const free = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() })
+  const port = free.port ?? 0
+  free.stop(true)
+  expect(
+    await Effect.runPromise(PortOwner.describe(port).pipe(Effect.provide(LayerNode.compile(AppProcess.node)))),
+  ).toBeUndefined()
 })
 
 test("service filenames share release channels and identify preview channels", () => {
@@ -569,7 +614,11 @@ test("unresponsive managed port occupancy reports a bounded conflict", async () 
     const exitCode = await Promise.race([contender.exited, Bun.sleep(20_000).then(() => undefined)])
     expect(exitCode).toBe(1)
     const output = (await new Response(contender.stdout).text()) + (await new Response(contender.stderr).text())
-    expect(output).toContain(`Managed service port ${listener.port} on 127.0.0.1 is already in use by another process`)
+    expect(output).toContain(
+      `Managed service port ${listener.port} on 127.0.0.1 is already in use by ${
+        process.platform !== "win32" && Bun.which("lsof") ? `PID ${process.pid} (` : "another process"
+      }`,
+    )
     expect(await Bun.file(registration).json()).toEqual(stale)
   } finally {
     contender.kill("SIGTERM")
