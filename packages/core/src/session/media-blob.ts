@@ -23,8 +23,6 @@ export const HASH_PATTERN = /^[0-9a-f]{64}$/
  * The ref names no server route; clients that opt in see a fetchable path only in the response projection.
  */
 export const REF_SCHEME = "media:"
-// Written only by early builds of this feature; still read, never written.
-const LEGACY_REF_PREFIX = "/api/media/"
 
 export const ref = (hash: string) => `${REF_SCHEME}${hash}`
 
@@ -74,12 +72,6 @@ type StoredToolFile = {
   readonly name?: string
 }
 
-let configuredWriteEnabled = false
-
-export const configure = (input: { readonly enabled?: boolean }) => {
-  if (input.enabled !== undefined) configuredWriteEnabled = input.enabled
-}
-
 export const WriteEnabled = Context.Reference<boolean | undefined>("@opencode/SessionMediaBlob/WriteEnabled", {
   defaultValue: () => undefined,
 })
@@ -89,24 +81,26 @@ export const withWriteEnabled =
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.provideService(effect, WriteEnabled, enabled)
 
+/** Reads `experimental.mediaBlob` from the Config in scope on every call; without one, it is off. */
 export const isWriteEnabled = Effect.gen(function* () {
   const explicit = yield* WriteEnabled
   if (explicit !== undefined) return explicit
   const config = yield* Effect.serviceOption(Config.Service)
-  if (Option.isSome(config)) {
-    const fromConfig = Config.latest(yield* config.value.entries(), "experimental")?.mediaBlob
-    if (fromConfig !== undefined) return fromConfig
-  }
-  return configuredWriteEnabled
+  if (Option.isNone(config)) return false
+  return Config.latest(yield* config.value.entries(), "experimental")?.mediaBlob === true
 })
 
+// A media endpoint path, relative or as a full URL: legacy `/api/media/<hash>` or `/api/experimental/media/<hash>`.
+const MEDIA_URL = /^(?:https?:\/\/[^/?#]+)?\/api\/(?:experimental\/)?media\/([0-9a-f]{64})(?:[?#].*)?$/s
+
+/** The blob hash in a `media:<hash>` ref or any recognized media endpoint URL. Writes store all of them as `media:<hash>`. */
 export const hashFromUri = (uri: string | undefined) => {
-  const hash = uri?.startsWith(REF_SCHEME)
-    ? uri.slice(REF_SCHEME.length)
-    : uri?.startsWith(LEGACY_REF_PREFIX)
-      ? uri.slice(LEGACY_REF_PREFIX.length)
-      : undefined
-  return hash !== undefined && HASH_PATTERN.test(hash) ? hash : undefined
+  if (uri === undefined) return undefined
+  if (uri.startsWith(REF_SCHEME)) {
+    const hash = uri.slice(REF_SCHEME.length)
+    return HASH_PATTERN.test(hash) ? hash : undefined
+  }
+  return MEDIA_URL.exec(uri)?.[1]
 }
 
 const u16be = (bytes: Uint8Array, offset: number) => (bytes[offset]! << 8) | bytes[offset + 1]!
@@ -250,12 +244,15 @@ const withMeta = <T extends { readonly mime: string }>(
 })
 
 /**
- * Replaces inline user attachments and tool `data:` files with `media:<hash>` refs + metadata
- * `{ uri, mime, width, height, bytes }` and returns the raw blobs to persist in `media_blob`.
- * Legacy `/api/media/<hash>` refs are rewritten to `media:<hash>`.
+ * Rewrites every recognized media URL (legacy `/api/media/<hash>`, the experimental route, full endpoint URLs)
+ * to `media:<hash>`. With `inline` set, also replaces inline user attachments and tool `data:` files with
+ * `media:<hash>` refs + metadata `{ uri, mime, width, height, bytes }` and returns the raw blobs to persist.
  * Never modifies or re-encodes the input bytes; dimensions are read from image headers when available.
  */
-export function split<T extends Data>(data: T): { readonly data: T; readonly blobs: ReadonlyArray<Blob> } {
+export function split<T extends Data>(
+  data: T,
+  inline = true,
+): { readonly data: T; readonly blobs: ReadonlyArray<Blob> } {
   const blobs = new Map<string, Blob>()
   const store = (raw: Buffer, mime: string) => {
     const hash = hashBytes(raw)
@@ -277,7 +274,7 @@ export function split<T extends Data>(data: T): { readonly data: T; readonly blo
   if ("files" in data && data.files) {
     let changed = false
     const files = (data.files as ReadonlyArray<StoredUserFile>).map((file) => {
-      if (typeof file.data !== "string" || file.data.length === 0) {
+      if (!inline || typeof file.data !== "string" || file.data.length === 0) {
         const hash = hashFromUri(file.uri)
         if (hash === undefined || file.uri === ref(hash)) return file
         changed = true
@@ -308,7 +305,7 @@ export function split<T extends Data>(data: T): { readonly data: T; readonly blo
         partChanged = true
         return { ...item, uri: ref(hash) }
       }
-      const match = /^data:[^,]*;base64,(.+)$/s.exec(item.uri)
+      const match = inline ? /^data:[^,]*;base64,(.+)$/s.exec(item.uri) : null
       if (!match) return item
       const blob = store(Buffer.from(match[1]!, "base64"), item.mime)
       partChanged = true
@@ -403,8 +400,15 @@ export function collectHashes(data: Data, target = new Set<string>()) {
 export const hasRefs = (data: Data) => collectHashes(data).size > 0
 
 export const recordRefs = Effect.fnUntraced(function* (db: DatabaseService, owner: RefOwner, data: Data) {
-  const hashes = [...collectHashes(data)]
-  if (hashes.length === 0) return
+  const referenced = [...collectHashes(data)]
+  if (referenced.length === 0) return
+  // A ref to a blob that is already gone has nothing to keep alive; reads render it as unavailable.
+  const hashes = (yield* db
+    .select({ hash: MediaBlobTable.hash })
+    .from(MediaBlobTable)
+    .where(inArray(MediaBlobTable.hash, referenced))
+    .all()
+    .pipe(Effect.orDie)).map((row) => row.hash)
   for (const hash of hashes) {
     yield* db
       .insert(MediaRefTable)
@@ -467,16 +471,16 @@ export const sweep = Effect.fnUntraced(function* (db: DatabaseService) {
 })
 
 /**
- * Stores inline media as blobs when `experimental.mediaBlob` is enabled and returns the row data to persist,
- * recording `media_ref` entries in the same transaction when `owner` is supplied.
+ * Canonicalizes media URLs to `media:<hash>`, stores inline media as blobs when `experimental.mediaBlob` is
+ * enabled, and returns the row data to persist, recording `media_ref` entries in the same transaction when
+ * `owner` is supplied.
  */
 export const externalize = Effect.fnUntraced(function* <T extends Data>(
   db: DatabaseService,
   data: T,
   owner?: RefOwner,
 ) {
-  const writeEnabled = yield* isWriteEnabled
-  const result = writeEnabled ? split(data) : { data, blobs: [] as ReadonlyArray<Blob> }
+  const result = split(data, yield* isWriteEnabled)
   if (result.blobs.length > 0)
     yield* db
       .insert(MediaBlobTable)

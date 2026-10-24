@@ -33,6 +33,9 @@ import {
   SessionTable,
 } from "@opencode/core/session/sql"
 import { Image } from "@opencode/core/image"
+import { Config } from "@opencode/core/config"
+import { Document, Info } from "@opencode/schema/config"
+import { ConfigExperimental } from "@opencode/schema/config/experimental"
 import { SessionMediaBlob } from "@opencode/core/session/media-blob"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { testEffect } from "./lib/effect"
@@ -1160,10 +1163,105 @@ describe("SessionProjector", () => {
 
       expect(SessionMediaBlob.hashFromUri(`media:${hash}`)).toBe(hash)
       expect(SessionMediaBlob.hashFromUri(`/api/media/${hash}`)).toBe(hash)
-      expect(SessionMediaBlob.hashFromUri(`/api/experimental/media/${hash}`)).toBeUndefined()
+      expect(SessionMediaBlob.hashFromUri(`/api/experimental/media/${hash}`)).toBe(hash)
+      expect(SessionMediaBlob.hashFromUri(`https://studio.example:4096/api/experimental/media/${hash}?x=1`)).toBe(hash)
       expect(SessionMediaBlob.hashFromUri("media:../etc/passwd")).toBeUndefined()
       expect(SessionMediaBlob.hashFromUri(`media:${hash.toUpperCase()}`)).toBeUndefined()
+      expect(SessionMediaBlob.hashFromUri(`/proxy/api/media/${hash}`)).toBeUndefined()
+      expect(SessionMediaBlob.hashFromUri(`file:///api/media/${hash}`)).toBeUndefined()
+      expect(SessionMediaBlob.hashFromUri(`/api/media/${hash}/extra`)).toBeUndefined()
     }),
+  )
+
+  it.effect("canonicalizes media URLs to media:<hash> on every write, even with experimental.mediaBlob off", () =>
+    Effect.gen(function* () {
+      const db = yield* seedSession()
+      const bytes = Buffer.from("canonical-blob")
+      const hash = SessionMediaBlob.hashBytes(bytes)
+      const gone = "d".repeat(64)
+      yield* db
+        .insert(MediaBlobTable)
+        .values({ hash, mime: "image/png", bytes: bytes.byteLength, width: null, height: null, data: bytes })
+        .run()
+        .pipe(Effect.orDie)
+      const urls = [
+        `/api/media/${hash}`,
+        `/api/experimental/media/${hash}`,
+        `http://127.0.0.1:4096/api/experimental/media/${hash}`,
+        `https://studio.example/api/media/${hash}?location%5Bdirectory%5D=%2Fp`,
+      ]
+      const owner = { sessionID, messageID: SessionMessage.ID.make("msg_canonical_tool"), seq: 1 }
+      const assistant = {
+        agent: build,
+        model,
+        content: [
+          {
+            type: "tool",
+            id: "call_1",
+            name: "fetch",
+            executed: true,
+            state: {
+              status: "completed",
+              input: {},
+              content: [...urls, `/api/experimental/media/${gone}`].map((uri) => ({ type: "file", uri, mime: "image/png" })),
+            },
+            time: { created: 1, ran: 1, completed: 1 },
+          },
+        ],
+        time: { created: 1, completed: 1 },
+      } as any
+      const user = {
+        text: "imported",
+        files: urls.map((uri) => ({ uri, mime: "image/png" })),
+        time: { created: 2 },
+      } as any
+
+      const writtenAssistant = yield* SessionMediaBlob.externalize(db, assistant, owner)
+      const writtenUser = yield* SessionMediaBlob.externalize(db, user, {
+        ...owner,
+        messageID: SessionMessage.ID.make("msg_canonical_user"),
+        seq: 2,
+      })
+      const written = JSON.stringify([writtenAssistant, writtenUser])
+      expect(written).not.toContain("/api/")
+      expect(written.match(new RegExp(`"media:${hash}"`, "g"))).toHaveLength(urls.length * 2)
+      // A blob that is already gone still canonicalizes, but records no ref (media_ref.hash references media_blob).
+      expect(written).toContain(`"media:${gone}"`)
+      const refs = yield* db.select().from(MediaRefTable).all().pipe(Effect.orDie)
+      expect(refs.map((row) => [row.message_id, row.hash]).sort()).toEqual([
+        ["msg_canonical_tool", hash],
+        ["msg_canonical_user", hash],
+      ])
+      // Canonicalization never stores bytes; only an enabled write does.
+      expect(yield* db.select().from(MediaBlobTable).all().pipe(Effect.orDie)).toHaveLength(1)
+    }),
+  )
+
+  it.effect("re-reads experimental.mediaBlob from config on every write, so turning it off stops externalizing", () =>
+    Effect.gen(function* () {
+      const db = yield* seedSession()
+      const bytes = Buffer.from("runtime-toggle")
+      const data = {
+        text: "toggle",
+        files: [{ data: bytes.toString("base64"), mime: "application/pdf", source: { type: "inline" } }],
+        time: { created: 1 },
+      } as any
+      const config = yield* Config.Test
+      const enabled = new Document({ type: "document", info: new Info({ experimental: new ConfigExperimental.Info({ mediaBlob: true }) }) })
+
+      // Absent from config means off.
+      expect(JSON.stringify(yield* SessionMediaBlob.externalize(db, data))).toContain(bytes.toString("base64"))
+
+      yield* config.setEntries([enabled])
+      expect(yield* SessionMediaBlob.isWriteEnabled).toBe(true)
+      expect(JSON.stringify(yield* SessionMediaBlob.externalize(db, data))).toContain(
+        `"media:${SessionMediaBlob.hashBytes(bytes)}"`,
+      )
+
+      yield* config.setEntries([])
+      expect(yield* SessionMediaBlob.isWriteEnabled).toBe(false)
+      expect(JSON.stringify(yield* SessionMediaBlob.externalize(db, data))).toContain(bytes.toString("base64"))
+    }).pipe(Effect.provide(Config.testLayer())),
   )
 
   it.effect("garbage-collects media_ref and media_blob across cancel, revert, fork, and session delete", () =>
