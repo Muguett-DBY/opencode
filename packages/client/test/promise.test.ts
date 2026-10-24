@@ -11,7 +11,6 @@ test("exposes every standard HTTP API group", () => {
     "plugin",
     "session",
     "message",
-    "media",
     "model",
     "generate",
     "voice",
@@ -42,7 +41,6 @@ test("exposes every standard HTTP API group", () => {
   expect(Object.keys(client.debug)).toEqual(["heapDump", "location"])
   expect(Object.keys(client.debug.location)).toEqual(["list", "evict"])
   expect(Object.keys(client.message)).toEqual(["list"])
-  expect(Object.keys(client.media)).toEqual(["get"])
   expect(Object.keys(client.integration)).toEqual(["list", "get", "wellknown", "connect", "oauth", "command"])
   expect(Object.keys(client.integration.wellknown)).toEqual(["add"])
   expect(Object.keys(client.integration.connect)).toEqual(["key", "external"])
@@ -55,7 +53,8 @@ test("exposes every standard HTTP API group", () => {
   expect(Object.keys(client.vcs)).toEqual(["init", "get", "base", "status", "branch", "diff"])
   expect(Object.keys(client.pty)).toEqual(["list", "create", "get", "update", "remove", "connect"])
   expect(Object.keys(client.pty.connect)).toEqual(["token"])
-  expect(Object.keys(client.experimental)).toEqual(["persistentPty"])
+  expect(Object.keys(client.experimental).sort()).toEqual(["media", "persistentPty"])
+  expect(Object.keys(client.experimental.media)).toEqual(["get"])
   expect(client.experimental.persistentPty.read).toBeFunction()
   expect(Object.keys(client.shell)).toEqual(["list", "create", "get", "output", "remove"])
   expect(Object.keys(client.project)).toEqual(["list", "update"])

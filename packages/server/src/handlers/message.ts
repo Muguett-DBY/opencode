@@ -1,3 +1,4 @@
+import { LocationServiceMap } from "@opencode/core/location-services"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionMediaBlob } from "@opencode/core/session/media-blob"
 import { Session } from "@opencode/core/session"
@@ -5,6 +6,7 @@ import { Effect, Option, Schema } from "effect"
 import { HttpServerResponse } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../api"
+import { mediaUriFor } from "../media-uri"
 import { InvalidCursorError } from "@opencode/protocol/errors"
 import { SessionMediaMessagesResponse } from "@opencode/protocol/groups/message"
 import { failedMessageDecode, missingSession } from "./session-error"
@@ -31,6 +33,7 @@ const cursor = {
 export const MessageHandler = HttpApiBuilder.group(Api, "server.message", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
+    const locations = yield* LocationServiceMap.Service
 
     return handlers.handle(
       "session.messages",
@@ -42,7 +45,7 @@ export const MessageHandler = HttpApiBuilder.group(Api, "server.message", (handl
             (yield* new InvalidCursorError({ message: "Invalid cursor" }))
           : undefined
         const order = decoded?.order ?? ctx.query.order ?? "desc"
-        const mediaUri = SessionMediaBlob.hasMediaUriCapability(ctx.request.headers)
+        const mediaUri = yield* mediaUriFor(locations, ctx.request)
         const messages = yield* session
           .messages({
             sessionID: ctx.params.sessionID,

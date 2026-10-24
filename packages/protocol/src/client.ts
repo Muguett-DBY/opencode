@@ -42,7 +42,6 @@ export const groupNames = {
   "server.plugin": "plugin",
   "server.session": "session",
   "server.message": "message",
-  "server.media": "media",
   "server.model": "model",
   "server.generate": "generate",
   "server.voice": "voice",

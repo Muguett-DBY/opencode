@@ -1,3 +1,4 @@
+import { LocationServiceMap } from "@opencode/core/location-services"
 import { Session } from "@opencode/core/session"
 import { SessionMediaBlob } from "@opencode/core/session/media-blob"
 import { SessionStats } from "@opencode/core/session/stats"
@@ -15,6 +16,7 @@ import {
   SessionMediaPromptResponse,
 } from "@opencode/protocol/groups/session"
 import { Api } from "../api"
+import { mediaBlobEnabledAt, mediaUriFor } from "../media-uri"
 import {
   ConflictError,
   CommandExecutionError,
@@ -40,6 +42,7 @@ function missingForm(id: Form.ID) {
 export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
+    const locations = yield* LocationServiceMap.Service
     const transfer = yield* SessionTransfer.Service
     const requireOwnedForm = Effect.fnUntraced(function* (sessionID: Form.Info["sessionID"], formID: Form.ID) {
       const form = yield* Form.Service
@@ -120,13 +123,15 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.import",
         Effect.fn(function* (ctx) {
+          const location = ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) }
           return {
             data: yield* transfer
               .import({
                 data: { info: ctx.payload.info, messages: ctx.payload.messages },
-                location: ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) },
+                location,
               })
               .pipe(
+                SessionMediaBlob.withWriteEnabled(yield* mediaBlobEnabledAt(locations, location)),
                 Effect.catchTag("Session.NotFoundError", missingSession),
                 Effect.catchTag(
                   "SessionTransfer.ImportConflictError",
@@ -286,7 +291,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.prompt",
         Effect.fn(function* (ctx) {
-          const mediaUri = SessionMediaBlob.hasMediaUriCapability(ctx.request.headers)
+          const mediaUri = yield* mediaUriFor(locations, ctx.request)
           const response = {
             data: yield* session
               .prompt({
@@ -497,7 +502,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.context",
         Effect.fn(function* (ctx) {
-          const mediaUri = SessionMediaBlob.hasMediaUriCapability(ctx.request.headers)
+          const mediaUri = yield* mediaUriFor(locations, ctx.request)
           const response = {
             data: yield* session
               .context(ctx.params.sessionID)
@@ -534,7 +539,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.inbox.list",
         Effect.fn(function* (ctx) {
-          const mediaUri = SessionMediaBlob.hasMediaUriCapability(ctx.request.headers)
+          const mediaUri = yield* mediaUriFor(locations, ctx.request)
           const response = {
             data: yield* session
               .inbox(ctx.params.sessionID)
@@ -634,7 +639,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.message",
         Effect.fn(function* (ctx) {
-          const mediaUri = SessionMediaBlob.hasMediaUriCapability(ctx.request.headers)
+          const mediaUri = yield* mediaUriFor(locations, ctx.request)
           yield* session.get(ctx.params.sessionID).pipe(Effect.catchTag("Session.NotFoundError", missingSession))
           const message = yield* session
             .message(ctx.params)

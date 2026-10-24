@@ -96,7 +96,7 @@ const materializeAttachment = Effect.fn("SessionPrompt.materializeAttachment")(f
   input: PromptInput.FileAttachment,
 ) {
   const label = attachmentLabel(input)
-  const mediaHash = SessionMediaBlob.hashFromClientUri(input.uri)
+  const mediaHash = SessionMediaBlob.hashFromUri(input.uri)
   const resolved = input.uri.startsWith("data:")
     ? {
         bytes: yield* decodeDataURL(input.uri, label),

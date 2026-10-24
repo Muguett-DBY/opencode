@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { expect } from "bun:test"
 import { OpenCode, type SessionMessageInfo } from "@opencode/client"
 import { Database } from "@opencode/core/database/database"
@@ -44,14 +47,17 @@ const messages: SessionMessageInfo[] = [
   { id: "msg_idle", type: "idle", outcome: "succeeded", time: { created: 900 } },
 ]
 
-const setup = Effect.gen(function* () {
-  const handler = yield* ServerFetch.make({
+const serve = (options?: { readonly database?: string; readonly config?: string }) =>
+  ServerFetch.make({
     app: { version: "test" },
-    database: { path: ":memory:" },
-    config: { project: false },
+    database: { path: options?.database ?? ":memory:" },
+    config: { project: false, ...(options?.config === undefined ? {} : { content: options.config }) },
     models: { fetch: false },
     fs: { filewatcher: false },
   })
+
+const setupWith = Effect.fn(function* (options?: Parameters<typeof serve>[0]) {
+  const handler = yield* serve(options)
   const api = OpenCode.make({
     baseUrl: "http://opencode.local",
     fetch: Object.assign((input: string | URL | Request, init?: RequestInit) => handler(new Request(input, init)), {
@@ -64,6 +70,8 @@ const setup = Effect.gen(function* () {
   })
   return { api, handler, sessionID: session.id }
 })
+
+const setup = setupWith()
 
 it.live("filters message types before paginating in either direction through the generated client", () =>
   Effect.gen(function* () {
@@ -117,11 +125,12 @@ it.live("rejects unknown message type filters at the HTTP boundary", () =>
 )
 
 it.live(
-  "switches attachment wire shape on X-OpenCode-Capabilities: experimental-media-uri, serves /api/experimental/media/:hash with XSS protections + ETag + 304 (404 while experimental.mediaBlob is off), and enforces bytes on import and the LLM path",
+  "switches attachment wire shape on X-OpenCode-Capabilities: experimental-media-uri, serves /api/experimental/media/:hash with XSS protections + ETag + 304 (404 where experimental.mediaBlob is off), and enforces bytes on import and the LLM path",
   () =>
     Effect.gen(function* () {
-      const fixture = yield* setup
-      SessionMediaBlob.configure({ enabled: true })
+      const dir = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-media-wire-")))
+      const database = path.join(dir, "opencode.db")
+      const fixture = yield* setupWith({ database, config: JSON.stringify({ experimental: { mediaBlob: true } }) })
       const pngBase64 =
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
       const pngBytes = Buffer.from(pngBase64, "base64")
@@ -483,7 +492,7 @@ it.live(
           expect(missingMedia.status).toBe(404)
 
           // 4. Generated client media.get returns Uint8Array, and rehydrating before inbox.cancel survives blob sweep on undo + resend
-          const fetchedBytes = await mediaApi.media.get({ hash: pngHash })
+          const fetchedBytes = await mediaApi.experimental.media.get({ hash: pngHash })
           expect(Buffer.from(fetchedBytes).equals(pngBytes)).toBe(true)
 
           const undoBytes = Buffer.concat([pngBytes, Buffer.from("undo-only-image")])
@@ -497,7 +506,7 @@ it.live(
             delivery: "queue",
             resume: false,
           })
-          const rehydratedUndoBytes = await mediaApi.media.get({ hash: undoHash })
+          const rehydratedUndoBytes = await mediaApi.experimental.media.get({ hash: undoHash })
           await mediaApi.session.inbox.cancel({ sessionID, inboxID: queuedUndo.id })
           // After inbox.cancel sweeps the unreferenced blob, /api/experimental/media/<undoHash> is 404
           const sweptResponse = await fixture.handler(new Request(`http://opencode.local${undoUri}`))
@@ -615,15 +624,23 @@ it.live(
           )
           expect(JSON.stringify(llmMessages)).toContain(pngBase64)
           expect(JSON.stringify(llmMessages)).toContain("workspace file contents")
-        }).pipe(Effect.provide(AppNodeBuilder.build(Database.node)))
+        }).pipe(SessionMediaBlob.withWriteEnabled(true), Effect.provide(AppNodeBuilder.build(Database.node)))
         yield* localCheck
 
-        // 6. With experimental.mediaBlob off, the route 404s and opted-in clients get inline data again.
-        SessionMediaBlob.configure({ enabled: false })
+        // 6. A server over the same database whose config lacks experimental.mediaBlob: the route 404s and opted-in
+        // clients get inline data. The flag is read from config per request, so neither server's setting leaks.
+        const disabled = yield* serve({ database })
+        const disabledMediaApi = OpenCode.make({
+          baseUrl: "http://opencode.local",
+          headers: { "X-OpenCode-Capabilities": "experimental-media-uri" },
+          fetch: Object.assign(
+            (input: string | URL | Request, init?: RequestInit) => disabled(new Request(input, init)),
+            { preconnect: fetch.preconnect },
+          ),
+        })
         yield* Effect.promise(async () => {
-          const disabled = await fixture.handler(new Request(`http://opencode.local${mediaUri}`))
-          expect(disabled.status).toBe(404)
-          const inlineList = await mediaApi.message.list({ sessionID, order: "asc" })
+          expect((await disabled(new Request(`http://opencode.local${mediaUri}`))).status).toBe(404)
+          const inlineList = await disabledMediaApi.message.list({ sessionID, order: "asc" })
           const inlineUser = inlineList.data[0]
           expect(inlineUser?.type === "user" ? inlineUser.files?.[0] : undefined).toEqual({
             data: pngBase64,
@@ -631,9 +648,43 @@ it.live(
             source: { type: "inline" },
             name: "shot.png",
           })
+          expect(JSON.stringify(inlineList)).not.toContain("/api/experimental/media/")
+          expect((await fixture.handler(new Request(`http://opencode.local${mediaUri}`))).status).toBe(200)
+          expect((await disabled(new Request(`http://opencode.local${mediaUri}`))).status).toBe(404)
+        })
+
+        // 7. A ref whose blob is gone reaches opted-in clients as the unavailable placeholder, never a dead route.
+        yield* Effect.gen(function* () {
+          const { db } = yield* Database.Service
+          const goneHash = "e".repeat(64)
+          yield* db
+            .insert(SessionMessageTable)
+            .values({
+              id: SessionMessage.ID.make("msg_gone_media"),
+              session_id: sessionID,
+              type: "user",
+              seq: 1_000,
+              time_created: 1_000,
+              data: {
+                text: "gone",
+                files: [{ uri: `media:${goneHash}`, mime: "image/png", name: "gone.png" }] as any,
+                time: { created: 1_000 },
+              },
+            })
+            .run()
+            .pipe(Effect.orDie)
+        }).pipe(Effect.provide(AppNodeBuilder.build(Database.configured({ path: database }))))
+        yield* Effect.promise(async () => {
+          const goneUser = await mediaApi.session.message.get({ sessionID, messageID: "msg_gone_media" })
+          expect(goneUser.type === "user" ? goneUser.files?.[0] : undefined).toEqual({
+            data: Buffer.from("[media unavailable: gone.png (image/png)]").toString("base64"),
+            mime: "text/plain",
+            source: { type: "inline" },
+            name: "gone.png",
+          })
         })
       } finally {
-        SessionMediaBlob.configure({ enabled: false })
+        yield* Effect.promise(() => fs.rm(dir, { recursive: true, force: true }))
       }
     }),
 )

@@ -30,18 +30,13 @@ export const ref = (hash: string) => `${REF_SCHEME}${hash}`
 export const ROUTE_PREFIX = "/api/experimental/media/"
 export const routePath = (hash: string) => `${ROUTE_PREFIX}${hash}`
 
-/** Accepts a stored ref (`media:<hash>`, legacy `/api/media/<hash>`) or the experimental route path a client echoes back. */
-export const hashFromClientUri = (uri: string | undefined) => {
-  if (uri?.startsWith(ROUTE_PREFIX)) {
-    const hash = uri.slice(ROUTE_PREFIX.length)
-    return HASH_PATTERN.test(hash) ? hash : undefined
-  }
-  return hashFromUri(uri)
-}
-
 export const CAPABILITIES_HEADER = "x-opencode-capabilities"
 export const MEDIA_URI_CAPABILITY = "experimental-media-uri"
 
+/**
+ * Set by the server only when the client opted in and `experimental.mediaBlob` is on for the request, since the
+ * route 404s otherwise; opted-in clients get inline data while the flag is off.
+ */
 export const MediaUriCapability = Context.Reference<boolean>("@opencode/SessionMediaBlob/MediaUriCapability", {
   defaultValue: () => false,
 })
@@ -580,6 +575,21 @@ export const externalize = Effect.fnUntraced(function* <T extends Data>(
 export const unavailableText = (mime: string, name?: string) =>
   `[media unavailable: ${name === undefined ? mime : `${name} (${mime})`}]`
 
+const unavailableUserFile = (file: StoredUserFile) => {
+  const { uri: _u, bytes: _b, width: _w, height: _h, origin, source, ...rest } = file
+  return {
+    ...rest,
+    data: Buffer.from(unavailableText(file.mime, file.name)).toString("base64"),
+    mime: "text/plain",
+    source: source ?? origin ?? { type: "inline" as const },
+  }
+}
+
+const unavailableToolItem = (item: { readonly mime: string; readonly name?: string }) => ({
+  type: "text" as const,
+  text: unavailableText(item.mime, item.name),
+})
+
 function hydrateData<T extends Data>(
   data: T,
   blobs: ReadonlyMap<string, { readonly mime: string; readonly base64: string }>,
@@ -590,13 +600,13 @@ function hydrateData<T extends Data>(
       const hash = hashFromUri(file.uri)
       if (!hash) return file
       const blob = blobs.get(hash)
-      const { uri: _u, bytes: _b, width: _w, height: _h, origin, source, ...rest } = file
       changed = true
+      if (!blob) return unavailableUserFile(file)
+      const { uri: _u, bytes: _b, width: _w, height: _h, origin, source, ...rest } = file
       return {
         ...rest,
-        ...(blob
-          ? { data: blob.base64, mime: file.mime || blob.mime }
-          : { data: Buffer.from(unavailableText(file.mime, file.name)).toString("base64"), mime: "text/plain" }),
+        data: blob.base64,
+        mime: file.mime || blob.mime,
         source: source ?? origin ?? { type: "inline" as const },
       }
     })
@@ -614,7 +624,7 @@ function hydrateData<T extends Data>(
       if (!hash) return item
       const blob = blobs.get(hash)
       partChanged = true
-      if (!blob) return { type: "text" as const, text: unavailableText(item.mime, item.name) }
+      if (!blob) return unavailableToolItem(item)
       const { bytes: _b, width: _w, height: _h, ...rest } = item as StoredToolFile
       return {
         ...rest,
@@ -649,21 +659,21 @@ const loadBlobMetas = Effect.fnUntraced(function* (db: DatabaseService, hashes: 
   return metas
 })
 
-// The route 404s while experimental.mediaBlob is off, so opted-in clients get inline data then too.
-const projectsMediaUri = Effect.gen(function* () {
-  return (yield* MediaUriCapability) && (yield* isWriteEnabled)
-})
 
-/** Response projection for opted-in clients: stored refs become fetchable experimental route paths. */
-function toMediaUriData<T extends Data>(data: T): T {
+/**
+ * Response projection for opted-in clients: stored refs become fetchable experimental route paths.
+ * A ref whose blob is gone becomes the same unavailable placeholder inline readers get, never a dead route.
+ */
+function toMediaUriData<T extends Data>(data: T, present: ReadonlyMap<string, unknown>): T {
   if ("files" in data && data.files) {
     let changed = false
     const files = (data.files as ReadonlyArray<StoredUserFile>).map((file) => {
       const hash = hashFromUri(file.uri)
       if (!hash) return file
+      changed = true
+      if (!present.has(hash)) return unavailableUserFile(file)
       const { data: _d, source, origin, ...rest } = file
       const nextOrigin = origin ?? (isUriSource(source) ? source : undefined)
-      changed = true
       return {
         ...rest,
         uri: routePath(hash),
@@ -683,6 +693,7 @@ function toMediaUriData<T extends Data>(data: T): T {
       const hash = hashFromUri(item.uri)
       if (!hash) return item
       partChanged = true
+      if (!present.has(hash)) return unavailableToolItem(item)
       return { ...item, uri: routePath(hash) }
     })
     if (!partChanged) return part
@@ -710,12 +721,13 @@ const loadBlobs = Effect.fnUntraced(function* (db: DatabaseService, hashes: Read
 
 /** Restores inline base64 media for any `media:<hash>` refs in `rows` unless `MediaUriCapability` is enabled. */
 export const hydrate = Effect.fnUntraced(function* (db: DatabaseService, rows: ReadonlyArray<MessageRow>) {
-  if (yield* projectsMediaUri) {
-    const missing = new Set<string>()
-    for (const row of rows) for (const hash of missingMetaHashes(row.data)) missing.add(hash)
-    const metas = missing.size === 0 ? new Map<string, BlobMeta>() : yield* loadBlobMetas(db, missing)
+  if (yield* MediaUriCapability) {
+    const hashes = new Set<string>()
+    for (const row of rows) collectHashes(row.data, hashes)
+    if (hashes.size === 0) return rows
+    const metas = yield* loadBlobMetas(db, hashes)
     return rows.map((row) => {
-      const data = toMediaUriData(attachMeta(row.data, metas))
+      const data = toMediaUriData(attachMeta(row.data, metas), metas)
       return data === row.data ? row : { ...row, data }
     })
   }
@@ -731,12 +743,13 @@ export const hydrate = Effect.fnUntraced(function* (db: DatabaseService, rows: R
 
 /** Restores inline base64 media for any `media:<hash>` refs in `session_inbox` rows unless `MediaUriCapability` is enabled. */
 export const hydrateInbox = Effect.fnUntraced(function* (db: DatabaseService, rows: ReadonlyArray<InboxRow>) {
-  if (yield* projectsMediaUri) {
-    const missing = new Set<string>()
-    for (const row of rows) for (const hash of missingMetaHashes(row.payload)) missing.add(hash)
-    const metas = missing.size === 0 ? new Map<string, BlobMeta>() : yield* loadBlobMetas(db, missing)
+  if (yield* MediaUriCapability) {
+    const hashes = new Set<string>()
+    for (const row of rows) collectHashes(row.payload, hashes)
+    if (hashes.size === 0) return rows
+    const metas = yield* loadBlobMetas(db, hashes)
     return rows.map((row) => {
-      const payload = toMediaUriData(attachMeta(row.payload, metas))
+      const payload = toMediaUriData(attachMeta(row.payload, metas), metas)
       return payload === row.payload ? row : { ...row, payload }
     })
   }
