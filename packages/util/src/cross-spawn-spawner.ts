@@ -99,7 +99,12 @@ export class KilledBySignal extends Error {
 }
 
 type ExitSignal = Deferred.Deferred<readonly [code: number | null, signal: NodeJS.Signals | null]>
-type Spawned = readonly [process: NodeChildProcess.ChildProcess, closed: ExitSignal, exited: ExitSignal]
+type Spawned = readonly [
+  process: NodeChildProcess.ChildProcess,
+  closed: ExitSignal,
+  exited: ExitSignal,
+  settle: () => void,
+]
 
 const makeCrossSpawnSpawner = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -306,7 +311,7 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
         settle = Teardown.track(
           `child ${proc.pid} running: ${[command.command, ...command.args].join(" ").slice(0, 200)}`,
         )
-        resume(Effect.succeed([proc, closed, exited]))
+        resume(Effect.succeed([proc, closed, exited, () => settle()]))
       })
       return Effect.sync(() => {
         proc.kill("SIGTERM")
@@ -318,7 +323,7 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
     opts: NodeChildProcess.SpawnOptions,
   ) {
     yield* Effect.logInfo("spawning process", { command: command.command, args: command.args, cwd: opts.cwd })
-    const [proc, closed, exited] = yield* launchProcess(command, opts)
+    const [proc, closed, exited, settle] = yield* launchProcess(command, opts)
     const stopOutput = yield* Deferred.make<void>()
     // Register before process release so the deadline remains active during termination.
     yield* Effect.forkScoped(
@@ -334,7 +339,7 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
         discard(proc.stderr)
       }),
     )
-    return [proc, closed, exited, stopOutput] as const
+    return [proc, closed, exited, stopOutput, settle] as const
   })
 
   const discard = (readable: NodeChildProcess.ChildProcess["stdout"]) => {
@@ -461,10 +466,12 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
                   }),
                 )
               },
-              (effect, [proc, , , stopOutput]) =>
+              (effect, [proc, , , stopOutput, settle]) =>
                 effect.pipe(
                   Effect.ensuring(
                     Effect.gen(function* () {
+                      // A detached descendant holding the pipes can keep "close" from ever firing.
+                      settle()
                       yield* Deferred.succeed(stopOutput, undefined)
                       proc.stdout?.destroy()
                       proc.stderr?.destroy()
