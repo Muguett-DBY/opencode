@@ -22,7 +22,6 @@ import {
 import { SessionEvent } from "./event.js"
 import { SessionExecution } from "./execution.js"
 import { SessionInbox } from "./inbox.js"
-import { SessionMediaBlob } from "./media-blob.js"
 import { SessionMessage } from "./message.js"
 import { SessionPrompt } from "./prompt.js"
 import { SessionRevert } from "./revert.js"
@@ -166,25 +165,20 @@ export const make = Effect.fn("Session.make")(function* () {
             delivery: input.delivery ?? "steer",
           })
           if (existing) return existing
-          const { item, writeEnabled } = yield* restore(
-            Effect.gen(function* () {
-              const item = yield* SessionPrompt.prepare({ session, messageID, input })
-              const writeEnabled = yield* SessionMediaBlob.isWriteEnabled.pipe(instances.provide(session))
-              return { item, writeEnabled }
-            }).pipe(
+          const item = yield* restore(
+            SessionPrompt.prepare({ session, messageID, input }).pipe(
+              Effect.provideService(Database.Service, database),
               Effect.provideService(Instance.Service, instances),
               Effect.provideService(FSUtil.Service, fs),
             ),
           )
           // Commit a staged revert only after preparation succeeds, before admitting new work.
           if (session.revert) yield* SessionRevert.commit(bus, session)
-          return yield* admission
-            .admit({
-              id: messageID,
-              sessionID: session.id,
-              item,
-            })
-            .pipe(SessionMediaBlob.withWriteEnabled(writeEnabled))
+          return yield* admission.admit({
+            id: messageID,
+            sessionID: session.id,
+            item,
+          })
         }).pipe(
           Effect.catchTag("SessionInbox.LifecycleConflict", () => new PromptConflictError({ sessionID, messageID })),
         )

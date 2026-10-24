@@ -26,6 +26,53 @@ export const REF_SCHEME = "media:"
 
 export const ref = (hash: string) => `${REF_SCHEME}${hash}`
 
+/** Experimental endpoint that serves blob bytes. Response projections map `media:<hash>` here for opted-in clients. */
+export const ROUTE_PREFIX = "/api/experimental/media/"
+export const routePath = (hash: string) => `${ROUTE_PREFIX}${hash}`
+
+/** Accepts a stored ref (`media:<hash>`, legacy `/api/media/<hash>`) or the experimental route path a client echoes back. */
+export const hashFromClientUri = (uri: string | undefined) => {
+  if (uri?.startsWith(ROUTE_PREFIX)) {
+    const hash = uri.slice(ROUTE_PREFIX.length)
+    return HASH_PATTERN.test(hash) ? hash : undefined
+  }
+  return hashFromUri(uri)
+}
+
+export const CAPABILITIES_HEADER = "x-opencode-capabilities"
+export const MEDIA_URI_CAPABILITY = "experimental-media-uri"
+
+export const MediaUriCapability = Context.Reference<boolean>("@opencode/SessionMediaBlob/MediaUriCapability", {
+  defaultValue: () => false,
+})
+
+export const withMediaUri =
+  (enabled: boolean) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.provideService(effect, MediaUriCapability, enabled)
+
+export const hasMediaUriCapability = (headers: Readonly<Record<string, string | undefined>>) => {
+  const raw = headers[CAPABILITIES_HEADER]
+  if (!raw) return false
+  return raw.split(",").some((token) => token.trim().toLowerCase() === MEDIA_URI_CAPABILITY)
+}
+
+export const get = Effect.fn("SessionMediaBlob.get")(function* (db: DatabaseService, hash: string) {
+  return yield* db
+    .select({
+      hash: MediaBlobTable.hash,
+      mime: MediaBlobTable.mime,
+      bytes: MediaBlobTable.bytes,
+      width: MediaBlobTable.width,
+      height: MediaBlobTable.height,
+      data: MediaBlobTable.data,
+    })
+    .from(MediaBlobTable)
+    .where(eq(MediaBlobTable.hash, hash))
+    .get()
+    .pipe(Effect.orDie)
+})
+
 export type Blob = {
   readonly hash: string
   readonly mime: string
@@ -102,6 +149,14 @@ export const hashFromUri = (uri: string | undefined) => {
   }
   return MEDIA_URL.exec(uri)?.[1]
 }
+
+const isUriSource = (value: unknown): value is { readonly type: "uri"; readonly uri: string } =>
+  typeof value === "object" &&
+  value !== null &&
+  "type" in value &&
+  value.type === "uri" &&
+  "uri" in value &&
+  typeof value.uri === "string"
 
 const u16be = (bytes: Uint8Array, offset: number) => (bytes[offset]! << 8) | bytes[offset + 1]!
 const u16le = (bytes: Uint8Array, offset: number) => bytes[offset]! | (bytes[offset + 1]! << 8)
@@ -281,9 +336,17 @@ export function split<T extends Data>(
         return { ...file, uri: ref(hash) }
       }
       const blob = store(Buffer.from(file.data, "base64"), file.mime)
-      const { data: _, ...rest } = file
+      const { data: _, source, origin, ...rest } = file
+      const nextOrigin = origin ?? (isUriSource(source) ? source : undefined)
       changed = true
-      return withMeta(rest, blob.hash, blob)
+      return withMeta(
+        {
+          ...rest,
+          ...(nextOrigin === undefined ? {} : { origin: nextOrigin }),
+        },
+        blob.hash,
+        blob,
+      )
     })
     return {
       data: (changed ? { ...data, files } : data) as T,
@@ -565,6 +628,70 @@ function hydrateData<T extends Data>(
   return (changed ? { ...data, content } : data) as T
 }
 
+const loadBlobMetas = Effect.fnUntraced(function* (db: DatabaseService, hashes: ReadonlySet<string>) {
+  const all = [...hashes]
+  const metas = new Map<string, BlobMeta>()
+  for (let offset = 0; offset < all.length; offset += 500) {
+    const found = yield* db
+      .select({
+        hash: MediaBlobTable.hash,
+        mime: MediaBlobTable.mime,
+        bytes: MediaBlobTable.bytes,
+        width: MediaBlobTable.width,
+        height: MediaBlobTable.height,
+      })
+      .from(MediaBlobTable)
+      .where(inArray(MediaBlobTable.hash, all.slice(offset, offset + 500)))
+      .all()
+      .pipe(Effect.orDie)
+    for (const row of found) metas.set(row.hash, row)
+  }
+  return metas
+})
+
+// The route 404s while experimental.mediaBlob is off, so opted-in clients get inline data then too.
+const projectsMediaUri = Effect.gen(function* () {
+  return (yield* MediaUriCapability) && (yield* isWriteEnabled)
+})
+
+/** Response projection for opted-in clients: stored refs become fetchable experimental route paths. */
+function toMediaUriData<T extends Data>(data: T): T {
+  if ("files" in data && data.files) {
+    let changed = false
+    const files = (data.files as ReadonlyArray<StoredUserFile>).map((file) => {
+      const hash = hashFromUri(file.uri)
+      if (!hash) return file
+      const { data: _d, source, origin, ...rest } = file
+      const nextOrigin = origin ?? (isUriSource(source) ? source : undefined)
+      changed = true
+      return {
+        ...rest,
+        uri: routePath(hash),
+        ...(nextOrigin === undefined ? {} : { origin: nextOrigin }),
+      }
+    })
+    return (changed ? { ...data, files } : data) as T
+  }
+  if (!("content" in data)) return data
+  let changed = false
+  const content = data.content.map((part) => {
+    if (part.type !== "tool" || (part.state.status !== "completed" && part.state.status !== "error")) return part
+    if (!part.state.content) return part
+    let partChanged = false
+    const items = part.state.content.map((item) => {
+      if (item.type !== "file") return item
+      const hash = hashFromUri(item.uri)
+      if (!hash) return item
+      partChanged = true
+      return { ...item, uri: routePath(hash) }
+    })
+    if (!partChanged) return part
+    changed = true
+    return { ...part, state: { ...part.state, content: [items[0]!, ...items.slice(1)] as const } }
+  })
+  return (changed ? { ...data, content } : data) as T
+}
+
 const loadBlobs = Effect.fnUntraced(function* (db: DatabaseService, hashes: ReadonlySet<string>) {
   const all = [...hashes]
   const blobs = new Map<string, { readonly mime: string; readonly base64: string }>()
@@ -581,8 +708,17 @@ const loadBlobs = Effect.fnUntraced(function* (db: DatabaseService, hashes: Read
   return blobs
 })
 
-/** Restores inline base64 media for any `media:<hash>` refs in `rows`. Rows without refs are returned untouched. */
+/** Restores inline base64 media for any `media:<hash>` refs in `rows` unless `MediaUriCapability` is enabled. */
 export const hydrate = Effect.fnUntraced(function* (db: DatabaseService, rows: ReadonlyArray<MessageRow>) {
+  if (yield* projectsMediaUri) {
+    const missing = new Set<string>()
+    for (const row of rows) for (const hash of missingMetaHashes(row.data)) missing.add(hash)
+    const metas = missing.size === 0 ? new Map<string, BlobMeta>() : yield* loadBlobMetas(db, missing)
+    return rows.map((row) => {
+      const data = toMediaUriData(attachMeta(row.data, metas))
+      return data === row.data ? row : { ...row, data }
+    })
+  }
   const hashes = new Set<string>()
   for (const row of rows) collectHashes(row.data, hashes)
   if (hashes.size === 0) return rows
@@ -593,8 +729,17 @@ export const hydrate = Effect.fnUntraced(function* (db: DatabaseService, rows: R
   })
 })
 
-/** Restores inline base64 media for any `media:<hash>` refs in `session_inbox` rows. */
+/** Restores inline base64 media for any `media:<hash>` refs in `session_inbox` rows unless `MediaUriCapability` is enabled. */
 export const hydrateInbox = Effect.fnUntraced(function* (db: DatabaseService, rows: ReadonlyArray<InboxRow>) {
+  if (yield* projectsMediaUri) {
+    const missing = new Set<string>()
+    for (const row of rows) for (const hash of missingMetaHashes(row.payload)) missing.add(hash)
+    const metas = missing.size === 0 ? new Map<string, BlobMeta>() : yield* loadBlobMetas(db, missing)
+    return rows.map((row) => {
+      const payload = toMediaUriData(attachMeta(row.payload, metas))
+      return payload === row.payload ? row : { ...row, payload }
+    })
+  }
   const hashes = new Set<string>()
   for (const row of rows) collectHashes(row.payload, hashes)
   if (hashes.size === 0) return rows
