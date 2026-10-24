@@ -54,7 +54,8 @@ export const configure = (input: LanguageModelOptions = {}) => {
     headers: input.headers,
     http: input.http,
   })
-  const decision = (modelID: string | ModelID) => decisionRoute.model<BasetenDecisionOptions>({ id: modelID })
+  const decision = (modelID: string | ModelID) =>
+    decisionRoute.model<BasetenDecisionOptions>({ id: modelID, compatibility: { imageInput: "messages" } })
   return {
     id,
     model: (modelID: string | ModelID) => configured.model<OpenAIProviderOptionsInput>({ id: modelID }),

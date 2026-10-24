@@ -2,7 +2,15 @@ import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { HttpClientRequest } from "effect/http"
 import { Decision, DecisionClient, Media } from "../src/index.js"
-import { CloudflareWorkersAI, OpenAI, OpenCode, OpenRouter, TypeSafeAI, VercelAIGateway } from "../src/providers.js"
+import {
+  Baseten,
+  CloudflareWorkersAI,
+  OpenAI,
+  OpenCode,
+  OpenRouter,
+  TypeSafeAI,
+  VercelAIGateway,
+} from "../src/providers.js"
 import { it } from "./lib/effect.js"
 import { dynamicResponse, json, type Handler } from "./lib/http.js"
 
@@ -243,6 +251,44 @@ describe("Decision", () => {
               answers: { red: { type: "noul", noul: 0.98 } },
             }),
           )
+        }),
+      ),
+    ),
+  )
+
+  it.effect("puts media in a user message inside the Baseten state", () =>
+    Decision.generate({
+      model: Baseten.configure({ apiKey: "baseten-key" }).decision("decision-models/baseten-mammoth-27b-latest"),
+      input: [
+        { type: "text", text: "Photo:" },
+        { type: "media", media: png },
+        { type: "json", value: { source: "upload" } },
+      ],
+      questions: [{ name: "red", type: "predicate", instructions: "Is the photo mostly red?" }],
+    }).pipe(
+      Effect.tap((response) =>
+        Effect.sync(() => expect(response.answers).toEqual([{ name: "red", type: "predicate", probability: 0.99 }])),
+      ),
+      Effect.provide(
+        client((input) => {
+          expect(input.request.url).toBe("https://inference.baseten.co/v1/systemone")
+          expect(JSON.parse(input.text)).toEqual({
+            model: "decision-models/baseten-mammoth-27b-latest",
+            state: {
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: "Photo:" },
+                    { type: "image_url", image_url: { url: "data:image/png;base64,AQID" } },
+                    { type: "text", text: '{"source":"upload"}' },
+                  ],
+                },
+              ],
+            },
+            questions: { red: { type: "noul", instructions: "Is the photo mostly red?" } },
+          })
+          return Effect.succeed(json(input, { model: "mammoth", answers: { red: { type: "noul", noul: 0.99 } } }))
         }),
       ),
     ),

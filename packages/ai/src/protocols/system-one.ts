@@ -12,6 +12,7 @@ import { DecisionRoute } from "../route/decision.js"
 import { Endpoint } from "../route/endpoint.js"
 import { MediaProtocol } from "../route/media-protocol.js"
 import { AIError, UnsupportedOperationError, Usage, mergeJsonRecords } from "../schema/index.js"
+import { encodeJson } from "../utils/json.js"
 import { JsonObject, ProviderShared } from "./shared.js"
 
 export const DEFAULT_PATH = "/systemone"
@@ -115,6 +116,22 @@ const placeMedia = Effect.fnUntraced(function* (request: DecisionRequestFor, ima
   const media = parts.flatMap((part) => (part.type === "media" ? [part.media] : []))
   if (media.length === 0) return { state: state(parts.map(plain)) }
   if (imageInput === "state") return { state: yield* Effect.forEach(parts, (part) => stateItem(part, unsupported)) }
+  // Chat-style content in one user message: text and JSON as text parts, media as in `state`.
+  if (imageInput === "messages")
+    return {
+      state: {
+        messages: [
+          {
+            role: "user",
+            content: yield* Effect.forEach(parts, (part) =>
+              part.type === "media"
+                ? stateItem(part, unsupported)
+                : Effect.succeed({ type: "text", text: part.type === "text" ? part.text : encodeJson(part.value) }),
+            ),
+          },
+        ],
+      },
+    }
   if (imageInput === "images") {
     const lists = { image: "images", audio: "audio", video: "videos" } as const
     const unplaced = media.find((asset) => !Object.hasOwn(lists, asset.kind))
