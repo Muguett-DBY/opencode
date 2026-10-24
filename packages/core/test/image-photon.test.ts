@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import photon from "@silvia-odwyer/photon-node"
 import { createHash } from "node:crypto"
-import { Deferred, Effect, Ref } from "effect"
+import { Deferred, Effect, Exit, Logger, Ref } from "effect"
 import { TestClock } from "effect/testing"
 import { Photon } from "@opencode/core/image/photon"
 import { it } from "./lib/effect"
@@ -47,13 +47,56 @@ describe("Image.Photon", () => {
     }),
   )
 
-  it.live("falls back to resizing in-process when the worker cannot start", () =>
-    Effect.gen(function* () {
+  it.live("falls back to resizing in-process when the worker cannot start, warning once", () => {
+    const warnings: unknown[] = []
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message)
+    })
+    return Effect.gen(function* () {
       const normalize = yield* Photon.makeWith(
         Photon.spawnWorker(new URL("./missing-photon-worker.js", import.meta.url)),
       )
       expect(digest(yield* normalize("fixture.png", content, limits))).toEqual(expected)
       expect(digest(yield* normalize("fixture.png", content, limits))).toEqual(expected)
+      expect(warnings).toHaveLength(1)
+    }).pipe(Effect.provide(Logger.layer([logger])))
+  })
+
+  it.live("runs concurrent calls on one worker", () =>
+    Effect.gen(function* () {
+      const spawned = yield* Ref.make(0)
+      const normalize = yield* Photon.makeWith(
+        Photon.spawnWorker().pipe(Effect.tap(() => Ref.update(spawned, (count) => count + 1))),
+      )
+      const reference = yield* Photon.makeWith(Photon.spawnWorker(new URL("./missing.js", import.meta.url)))
+      const sizes = [400, 300, 200].map((maxWidth) => ({ ...limits, maxWidth, maxHeight: maxWidth }))
+      const results = yield* Effect.forEach(sizes, (size) => normalize("fixture.png", content, size), {
+        concurrency: "unbounded",
+      })
+      expect(yield* Ref.get(spawned)).toBe(1)
+      expect(new Set(results.map((result) => result.content)).size).toBe(3)
+      for (const [index, size] of sizes.entries())
+        expect(digest(results[index]!)).toEqual(digest(yield* reference("fixture.png", content, size)))
+    }),
+  )
+
+  it.live("fails every in-flight call when the worker crashes, then spawns a fresh one", () =>
+    Effect.gen(function* () {
+      const spawned = yield* Ref.make(0)
+      const normalize = yield* Photon.makeWith(
+        Ref.getAndUpdate(spawned, (count) => count + 1).pipe(
+          Effect.flatMap((count) =>
+            Photon.spawnWorker(count === 0 ? new URL("./fixture/photon-crash-worker.ts", import.meta.url) : undefined),
+          ),
+        ),
+      )
+      const exits = yield* Effect.forEach([0, 1], () => normalize("fixture.png", content, limits).pipe(Effect.exit), {
+        concurrency: "unbounded",
+      })
+      expect(exits.every(Exit.hasDies)).toBe(true)
+
+      expect(digest(yield* normalize("fixture.png", content, limits))).toEqual(expected)
+      expect(yield* Ref.get(spawned)).toBe(2)
     }),
   )
 

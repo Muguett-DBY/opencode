@@ -19,7 +19,9 @@ export type Size = {
   readonly maxHeight: number
   readonly maxBytes: number
 }
+// Unchanged lets the worker skip copying the caller's base64 back.
 export type Result =
+  | { readonly _tag: "Unchanged" }
   | { readonly _tag: "Content"; readonly content: Content }
   | { readonly _tag: "DecodeError" }
   | ({ readonly _tag: "SizeError" } & Size)
@@ -79,12 +81,12 @@ export function normalize(photon: Photon, content: Content, limits: Readonly<Lim
     }
     const fits = width <= limits.maxWidth && height <= limits.maxHeight && bytes <= limits.maxBase64Bytes
     const smallPng = bytes <= PNG_PASSTHROUGH_MAX_BASE64_BYTES || width * height <= SMALL_PNG_MAX_PIXELS
-    if (fits && (!limits.autoResize || content.mime !== "image/png" || smallPng)) return { _tag: "Content", content }
+    if (fits && (!limits.autoResize || content.mime !== "image/png" || smallPng)) return { _tag: "Unchanged" }
     if (!limits.autoResize) return sizeError
     const transparent = content.mime !== "image/jpeg" && hasTransparency(decoded.get_raw_pixels(), width, height)
     // An image that already fits only changes when JPEG makes it smaller.
     if (fits) {
-      if (transparent) return { _tag: "Content", content }
+      if (transparent) return { _tag: "Unchanged" }
       const jpeg = decoded.get_bytes_jpeg(JPEG_QUALITIES[0]!)
       return base64Length(jpeg) < bytes
         ? {
@@ -96,7 +98,7 @@ export function normalize(photon: Photon, content: Content, limits: Readonly<Lim
               mime: "image/jpeg",
             },
           }
-        : { _tag: "Content", content }
+        : { _tag: "Unchanged" }
     }
     const scale = Math.min(1, limits.maxWidth / width, limits.maxHeight / height)
     const sizes = Array.from({ length: 32 }).reduce<Array<{ width: number; height: number }>>((acc) => {

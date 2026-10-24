@@ -11,9 +11,9 @@ import type { Reply, Request } from "./photon-worker.js"
 // terminating it when idle returns that memory to the OS.
 const WORKER_IDLE_TIME_TO_LIVE = "10 seconds"
 
-class WorkerUnavailableError extends Schema.TaggedError<WorkerUnavailableError>()(
+export class WorkerUnavailableError extends Schema.TaggedError<WorkerUnavailableError>()(
   "Image.Photon.WorkerUnavailableError",
-  {},
+  { cause: Schema.Defect() },
 ) {}
 
 class WorkerCrashedError extends Schema.TaggedError<WorkerCrashedError>()("Image.Photon.WorkerCrashedError", {
@@ -21,6 +21,7 @@ class WorkerCrashedError extends Schema.TaggedError<WorkerCrashedError>()("Image
 }) {}
 
 type Thread = {
+  readonly crashed: () => boolean
   readonly run: (
     content: PhotonNormalize.Content,
     limits: Readonly<Limits>,
@@ -51,40 +52,40 @@ export const spawnWorker = (url?: URL) =>
       })
       return worker
     },
-    catch: () => new WorkerUnavailableError(),
+    catch: (cause) => new WorkerUnavailableError({ cause }),
   })
 
 function thread(worker: Worker): Thread {
-  const pending = new Map<number, (reply: Exclude<Reply, { _tag: "Ready" }>) => void>()
+  const pending = new Map<number, (result: PhotonNormalize.Result | WorkerCrashedError) => void>()
   let next = 0
-  let crashed: string | undefined
+  let crashed: WorkerCrashedError | undefined
+  // Every in-flight call fails, as a throw from in-process photon would.
   const crash = (message: string) => {
-    crashed ??= message
-    for (const [id, resume] of pending) resume({ _tag: "Defect", id, message })
+    crashed ??= new WorkerCrashedError({ message })
+    for (const resume of pending.values()) resume(crashed)
     pending.clear()
+    void worker.terminate()
   }
   // Only an in-flight request keeps the process alive.
   const settle = () => (pending.size === 0 ? worker.unref() : worker.ref())
   worker.on("message", (reply: Reply) => {
     if (reply._tag === "Ready") return
-    pending.get(reply.id)?.(reply)
+    pending.get(reply.id)?.(reply.result)
     pending.delete(reply.id)
     settle()
   })
+  worker.on("messageerror", (error) => crash(error.message))
   worker.on("error", (error) => crash(error.message))
   worker.on("exit", (code) => crash(`photon worker exited with code ${code}`))
   settle()
   return {
+    crashed: () => crashed !== undefined,
     run: (content, limits) =>
       Effect.callback<PhotonNormalize.Result, WorkerCrashedError>((resume) => {
-        if (crashed !== undefined) return resume(Effect.fail(new WorkerCrashedError({ message: crashed })))
+        if (crashed !== undefined) return resume(Effect.fail(crashed))
         const id = next++
-        pending.set(id, (reply) =>
-          resume(
-            reply._tag === "Done"
-              ? Effect.succeed(reply.result)
-              : Effect.fail(new WorkerCrashedError({ message: reply.message })),
-          ),
+        pending.set(id, (result) =>
+          resume(result instanceof WorkerCrashedError ? Effect.fail(result) : Effect.succeed(result)),
         )
         settle()
         worker.postMessage({ id, content, limits } satisfies Request)
@@ -112,11 +113,15 @@ export const makeWith = Effect.fnUntraced(function* (spawn: Effect.Effect<Worker
   let useWorker = true
 
   const inWorker = (content: PhotonNormalize.Content, limits: Readonly<Limits>) =>
-    RcRef.get(worker).pipe(
-      Effect.flatMap((thread) => thread.run(content, limits)),
+    Effect.gen(function* () {
+      const current = yield* RcRef.get(worker)
+      // A worker that died while idle is replaced rather than failing the call.
+      if (!current.crashed()) return yield* current.run(content, limits)
+      yield* RcRef.invalidate(worker)
+      return yield* (yield* RcRef.get(worker)).run(content, limits)
+    }).pipe(
       Effect.scoped,
       Effect.catchTag("Image.Photon.WorkerCrashedError", (error) =>
-        // A crashed or panicked wasm instance is unusable; the next call spawns a fresh worker.
         RcRef.invalidate(worker).pipe(Effect.andThen(Effect.die(new Error(error.message)))),
       ),
     )
@@ -134,13 +139,18 @@ export const makeWith = Effect.fnUntraced(function* (spawn: Effect.Effect<Worker
     if (!PhotonNormalize.available) return yield* new ResizerUnavailableError()
     const result = useWorker
       ? yield* inWorker(content, limits).pipe(
-          Effect.catchTag("Image.Photon.WorkerUnavailableError", () => {
+          Effect.catchTag("Image.Photon.WorkerUnavailableError", (error) => {
+            if (!useWorker) return inProcess(content, limits)
             useWorker = false
-            return inProcess(content, limits)
+            return Effect.logWarning("photon worker unavailable, resizing images on the main thread", {
+              cause: error.cause,
+            }).pipe(Effect.andThen(inProcess(content, limits)))
           }),
         )
       : yield* inProcess(content, limits)
     switch (result._tag) {
+      case "Unchanged":
+        return content
       case "Content":
         return result.content
       case "DecodeError":
