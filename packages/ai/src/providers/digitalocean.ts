@@ -53,7 +53,8 @@ export const configure = (input: LanguageModelOptions = {}) => {
     providerMetadataKey: "digitalocean",
     endpoint: { baseURL: endpoint ?? baseURL },
     auth,
-    headers: input.headers,
+    // DigitalOcean serves TypeSafe's Jev, which needs this header for images.
+    headers: { "TypeSafe-Danger-Zone-Images": "true", ...input.headers },
     http: input.http,
   })
   const decision = (modelID: string | ModelID) => decisionRoute.model({ id: modelID })
