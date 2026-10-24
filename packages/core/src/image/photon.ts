@@ -1,147 +1,156 @@
-import photonWasm from "#photon-wasm"
-import { Effect } from "effect"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
-import { FileSystem } from "../filesystem.js"
+export * as Photon from "./photon.js"
+
+import { Effect, RcRef, Schema } from "effect"
+import type { Worker } from "node:worker_threads"
+import type { FileSystem } from "../filesystem.js"
 import { DecodeError, ResizerUnavailableError, SizeError, type Limits } from "../image.js"
+import { PhotonNormalize } from "./photon-normalize.js"
+import type { Reply, Request } from "./photon-worker.js"
 
-const PNG_PASSTHROUGH_MAX_BASE64_BYTES = 384 * 1024
-const SMALL_PNG_MAX_PIXELS = 256 * 256
-const JPEG_QUALITIES = [80, 70, 55, 40]
+// The worker holds photon's wasm heap (hundreds of MB after a large image);
+// terminating it when idle returns that memory to the OS.
+const WORKER_IDLE_TIME_TO_LIVE = "10 seconds"
 
-// Base64 uses four bytes per three input bytes, including padding.
-const base64Length = (bytes: Uint8Array) => Math.ceil(bytes.length / 3) * 4
+class WorkerUnavailableError extends Schema.TaggedError<WorkerUnavailableError>()(
+  "Image.Photon.WorkerUnavailableError",
+  {},
+) {}
 
-// Samples an evenly spaced grid of up to 64×64 pixels.
-function hasTransparency(pixels: Uint8Array, width: number, height: number) {
-  const columns = Math.min(64, width)
-  const rows = Math.min(64, height)
-  let transparent = 0
-  for (let row = 0; row < rows; row++) {
-    const y = Math.floor(((row + 0.5) * height) / rows)
-    for (let column = 0; column < columns; column++) {
-      const x = Math.floor(((column + 0.5) * width) / columns)
-      if (pixels[(y * width + x) * 4 + 3]! < 250) transparent++
-    }
-  }
-  return transparent / (columns * rows) > 0.05
+class WorkerCrashedError extends Schema.TaggedError<WorkerCrashedError>()("Image.Photon.WorkerCrashedError", {
+  message: Schema.String,
+}) {}
+
+type Thread = {
+  readonly run: (
+    content: PhotonNormalize.Content,
+    limits: Readonly<Limits>,
+  ) => Effect.Effect<PhotonNormalize.Result, WorkerCrashedError>
 }
 
-export const make = Effect.gen(function* () {
+// Resolves once the worker has loaded photon. Anything else (no worker_threads,
+// a bundle without the worker entry, photon failing to load) means the worker
+// is unavailable.
+export const spawnWorker = (url?: URL) =>
+  Effect.tryPromise({
+    try: async () => {
+      const { Worker } = await import("node:worker_threads")
+      const worker = new Worker(url ?? new URL("./photon-worker.js", import.meta.url))
+      await new Promise<void>((resolve, reject) => {
+        const fail = (cause: unknown) => {
+          worker.off("message", ready)
+          reject(cause)
+        }
+        const ready = () => {
+          worker.off("error", fail)
+          worker.off("exit", fail)
+          resolve()
+        }
+        worker.once("message", ready)
+        worker.once("error", fail)
+        worker.once("exit", fail)
+      })
+      return worker
+    },
+    catch: () => new WorkerUnavailableError(),
+  })
+
+function thread(worker: Worker): Thread {
+  const pending = new Map<number, (reply: Exclude<Reply, { _tag: "Ready" }>) => void>()
+  let next = 0
+  let crashed: string | undefined
+  const crash = (message: string) => {
+    crashed ??= message
+    for (const [id, resume] of pending) resume({ _tag: "Defect", id, message })
+    pending.clear()
+  }
+  // Only an in-flight request keeps the process alive.
+  const settle = () => (pending.size === 0 ? worker.unref() : worker.ref())
+  worker.on("message", (reply: Reply) => {
+    if (reply._tag === "Ready") return
+    pending.get(reply.id)?.(reply)
+    pending.delete(reply.id)
+    settle()
+  })
+  worker.on("error", (error) => crash(error.message))
+  worker.on("exit", (code) => crash(`photon worker exited with code ${code}`))
+  settle()
+  return {
+    run: (content, limits) =>
+      Effect.callback<PhotonNormalize.Result, WorkerCrashedError>((resume) => {
+        if (crashed !== undefined) return resume(Effect.fail(new WorkerCrashedError({ message: crashed })))
+        const id = next++
+        pending.set(id, (reply) =>
+          resume(
+            reply._tag === "Done"
+              ? Effect.succeed(reply.result)
+              : Effect.fail(new WorkerCrashedError({ message: reply.message })),
+          ),
+        )
+        settle()
+        worker.postMessage({ id, content, limits } satisfies Request)
+        return Effect.sync(() => {
+          pending.delete(id)
+          settle()
+        })
+      }),
+  }
+}
+
+export const makeWith = Effect.fnUntraced(function* (spawn: Effect.Effect<Worker, WorkerUnavailableError>) {
   const loadPhoton = yield* Effect.cached(
-    // A runtime without a photon wasm artifact (#photon-wasm resolves to the
-    // empty string on workerd) has no resizer, by declaration: fail typed
-    // before touching URLs or module loading. The path resolution and import
-    // for runtimes that DO have an artifact stay inside the guard too — a
-    // throw outside it (workerd's undefined import.meta.url was one) is a
-    // defect that escapes the ResizerUnavailableError handling and turns any
-    // image-bearing prompt into a 500 instead of degrading to passthrough.
-    photonWasm === ""
-      ? Effect.fail(new ResizerUnavailableError())
-      : Effect.tryPromise({
-          try: async () => {
-            ;(globalThis as typeof globalThis & { __OPENCODE_PHOTON_WASM_PATH?: string }).__OPENCODE_PHOTON_WASM_PATH =
-              path.isAbsolute(photonWasm) ? photonWasm : fileURLToPath(new URL(photonWasm, import.meta.url))
-            return await import("@silvia-odwyer/photon-node")
-          },
-          catch: () => new ResizerUnavailableError(),
-        }),
+    Effect.tryPromise({
+      try: () => PhotonNormalize.load(),
+      catch: () => new ResizerUnavailableError(),
+    }),
   )
+  const worker = yield* RcRef.make({
+    acquire: Effect.acquireRelease(spawn, (worker) => Effect.promise(() => worker.terminate())).pipe(
+      Effect.map(thread),
+    ),
+    idleTimeToLive: WORKER_IDLE_TIME_TO_LIVE,
+  })
+  let useWorker = true
+
+  const inWorker = (content: PhotonNormalize.Content, limits: Readonly<Limits>) =>
+    RcRef.get(worker).pipe(
+      Effect.flatMap((thread) => thread.run(content, limits)),
+      Effect.scoped,
+      Effect.catchTag("Image.Photon.WorkerCrashedError", (error) =>
+        // A crashed or panicked wasm instance is unusable; the next call spawns a fresh worker.
+        RcRef.invalidate(worker).pipe(Effect.andThen(Effect.die(new Error(error.message)))),
+      ),
+    )
+  const inProcess = (content: PhotonNormalize.Content, limits: Readonly<Limits>) =>
+    loadPhoton.pipe(Effect.map((photon) => PhotonNormalize.normalize(photon, content, limits)))
+
   return Effect.fn("Image.Photon.normalize")(function* (
     resource: string,
     content: FileSystem.Content & { readonly encoding: "base64" },
     limits: Readonly<Limits>,
   ) {
-    const photon = yield* loadPhoton
-    const decoded = yield* Effect.try({
-      try: () => photon.PhotonImage.new_from_byteslice(Buffer.from(content.content, "base64")),
-      catch: () => new DecodeError({ resource }),
-    })
-    try {
-      const width = decoded.get_width()
-      const height = decoded.get_height()
-      const bytes = Buffer.byteLength(content.content, "utf-8")
-      const fits = width <= limits.maxWidth && height <= limits.maxHeight && bytes <= limits.maxBase64Bytes
-      const smallPng = bytes <= PNG_PASSTHROUGH_MAX_BASE64_BYTES || width * height <= SMALL_PNG_MAX_PIXELS
-      if (fits && (!limits.autoResize || content.mime !== "image/png" || smallPng)) return content
-      if (!limits.autoResize)
-        return yield* new SizeError({
-          resource,
-          width,
-          height,
-          bytes,
-          maxWidth: limits.maxWidth,
-          maxHeight: limits.maxHeight,
-          maxBytes: limits.maxBase64Bytes,
-        })
-      const transparent = content.mime !== "image/jpeg" && hasTransparency(decoded.get_raw_pixels(), width, height)
-      // An image that already fits only changes when JPEG makes it smaller.
-      if (fits) {
-        if (transparent) return content
-        const jpeg = decoded.get_bytes_jpeg(JPEG_QUALITIES[0]!)
-        return base64Length(jpeg) < bytes
-          ? {
-              ...content,
-              content: Buffer.from(jpeg).toString("base64"),
-              encoding: "base64" as const,
-              mime: "image/jpeg",
-            }
-          : content
+    // Fail typed before touching URLs, workers or module loading: workerd has
+    // no photon artifact, and a throw outside the typed path (its undefined
+    // import.meta.url was one) turns any image-bearing prompt into a 500.
+    if (!PhotonNormalize.available) return yield* new ResizerUnavailableError()
+    const result = useWorker
+      ? yield* inWorker(content, limits).pipe(
+          Effect.catchTag("Image.Photon.WorkerUnavailableError", () => {
+            useWorker = false
+            return inProcess(content, limits)
+          }),
+        )
+      : yield* inProcess(content, limits)
+    switch (result._tag) {
+      case "Content":
+        return result.content
+      case "DecodeError":
+        return yield* new DecodeError({ resource })
+      case "SizeError": {
+        const { _tag, ...size } = result
+        return yield* new SizeError({ resource, ...size })
       }
-      const scale = Math.min(1, limits.maxWidth / width, limits.maxHeight / height)
-      const sizes = Array.from({ length: 32 }).reduce<Array<{ width: number; height: number }>>((acc) => {
-        const previous = acc.at(-1) ?? {
-          width: Math.max(1, Math.round(width * scale)),
-          height: Math.max(1, Math.round(height * scale)),
-        }
-        const next =
-          acc.length === 0
-            ? previous
-            : {
-                width: previous.width === 1 ? 1 : Math.max(1, Math.floor(previous.width * 0.75)),
-                height: previous.height === 1 ? 1 : Math.max(1, Math.floor(previous.height * 0.75)),
-              }
-        return acc.some((item) => item.width === next.width && item.height === next.height) ? acc : [...acc, next]
-      }, [])
-      for (const size of sizes) {
-        const resized =
-          size.width === width && size.height === height
-            ? decoded
-            : photon.resize(decoded, size.width, size.height, photon.SamplingFilter.Lanczos3)
-        try {
-          const pngEncoder = ["image/png", () => resized.get_bytes()] as const
-          const jpegEncoders = JPEG_QUALITIES.map(
-            (quality) => ["image/jpeg", () => resized.get_bytes_jpeg(quality)] as const,
-          )
-          const pngFirst = transparent || size.width * size.height <= SMALL_PNG_MAX_PIXELS
-          const encoders: Array<readonly [mime: string, encode: () => Uint8Array]> = pngFirst
-            ? [pngEncoder, ...jpegEncoders]
-            : [...jpegEncoders, pngEncoder]
-          for (const [mime, encode] of encoders) {
-            const candidate = encode()
-            if (base64Length(candidate) <= limits.maxBase64Bytes)
-              return {
-                ...content,
-                content: Buffer.from(candidate).toString("base64"),
-                encoding: "base64" as const,
-                mime,
-              }
-          }
-        } finally {
-          if (resized !== decoded) resized.free()
-        }
-      }
-      return yield* new SizeError({
-        resource,
-        width,
-        height,
-        bytes,
-        maxWidth: limits.maxWidth,
-        maxHeight: limits.maxHeight,
-        maxBytes: limits.maxBase64Bytes,
-      })
-    } finally {
-      decoded.free()
     }
   })
 })
+
+export const make = makeWith(spawnWorker())
