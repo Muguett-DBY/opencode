@@ -20,6 +20,8 @@ const springs = () => !james()
 const spring = motionTuning.spring("sidebars", {
   label: "Spring",
   group,
+  description: "The sidebar and the side panel opening and closing, on one spring.",
+  target: "#vertical-tabs-sidebar",
   when: springs,
   shipped: "smooth",
   presets: {
@@ -35,6 +37,7 @@ const scaleByDistance = motionTuning.toggle("sidebars.scaleByDistance", {
   label: "Scale by distance",
   group,
   subsection: "Scale by distance",
+  description: "A wider panel takes a little longer, so every width moves at the same pace.",
   experiment: true,
   value: true,
 })
@@ -83,9 +86,9 @@ const distanceScale = (): DistanceScale | null =>
  */
 export function panelSpring(distance?: number, base = spring(), scale = distanceScale()): DurationOptions {
   if (!scale || !distance || distance <= 0) return base
-  // The bounds stretch with the global speed and slow motion, like the spring itself. A min dragged past the max stops
+  // The bounds stretch with the global speed, like the spring itself. A min dragged past the max stops
   // at it.
-  const time = (motionGlobals.slow.value ? 4 : 1) / motionGlobals.speed.value
+  const time = motionGlobals.time()
   const max = scale.max * time
   const min = Math.min(scale.min * time, max)
   const duration = base.duration * Math.sqrt(distance / scale.reference)

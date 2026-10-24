@@ -24,6 +24,8 @@ const style = motionTuning.choice("sidebars.preview.style", {
   label: "Style",
   group: "Sidebars",
   subsection: "Hover",
+  description: "The tooltip beside a sidebar tab as you move between rows.",
+  target: "#vertical-tabs-sidebar",
   experiment: true,
   value: "cursor",
   labels: { today: "Today", glide: "Glide", cursor: "Follow cursor" },

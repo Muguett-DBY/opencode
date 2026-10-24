@@ -9,7 +9,7 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
-it("offers Snappy, Smooth and Calm for every spring, with Global pinned and a collapsible card per area", async () => {
+it("offers Snappy, Smooth and Calm for every spring, with Global pinned and a tab per area of folded feature cards", async () => {
   const drawer = motionTuning.spring("test.drawer", {
     label: "Spring",
     group: "Drawer",
@@ -49,27 +49,78 @@ it("offers Snappy, Smooth and Calm for every spring, with Global pinned and a co
   expect(labels).toContain("Calm")
   expect(labels).not.toContain("default")
 
-  // Global pinned, then a folded card per area; an area's replay buttons and sub-headings sit inside its card.
   const shown = (selector: string) =>
     [...container.querySelectorAll(selector)].flatMap((element) =>
       element.closest("[hidden]") === null ? [element.textContent?.trim()] : [],
     )
 
-  expect(shown(".knobs-group-label")).toEqual(["Global", "Drawer", "Image open"])
+  // Global pinned above a tab per area; the area's own knobs fold into a "General" card.
+  expect(shown("[role=tab]")).toEqual(["Drawer", "Image open"])
+  expect(shown(".knobs-group-label")).toEqual(["Global", "General"])
   expect(
     [...container.querySelectorAll(".knobs-group-head[data-foldable]")].map((head) => head.textContent?.trim()),
-  ).toEqual([expect.stringContaining("Drawer"), expect.stringContaining("Image open")])
-  expect([...container.querySelectorAll(".knobs-subhead-label")].map((label) => label.textContent?.trim())).toEqual([
-    "Replay",
-    "Lightbox",
-  ])
-  expect(container.querySelectorAll("[data-experiment]")).toHaveLength(1)
+  ).toEqual([expect.stringContaining("General"), expect.stringContaining("Lightbox")])
   expect(labels).not.toContain("Jump to…")
   expect(drawer()).toEqual({ duration: 0.15, bounce: 0 })
 
   chip.click()
   expect(drawer()).toEqual({ duration: 0.25, bounce: 0 })
   expect(image()).toEqual({ duration: 0.3, bounce: 0 })
+})
+
+it("describes each card under its title and outlines what a hovered row changes", async () => {
+  const target = document.createElement("div")
+  target.id = "outlined"
+  target.getBoundingClientRect = () => new DOMRect(10, 20, 100, 40)
+  document.body.append(target)
+
+  motionTuning.number("test.outline", {
+    group: "Outline",
+    label: "Size",
+    value: 1,
+    min: 0,
+    max: 2,
+    step: 0.1,
+    description: "Sets the size.",
+    target: "#outlined",
+  })
+
+  const other = document.createElement("div")
+  other.id = "other"
+  other.getBoundingClientRect = () => new DOMRect(300, 20, 50, 50)
+  document.body.append(other)
+  motionTuning.number("test.other", {
+    group: "Other",
+    label: "Size",
+    value: 1,
+    min: 0,
+    max: 2,
+    step: 0.1,
+    target: "#other",
+  })
+
+  const container = document.createElement("div")
+  document.body.append(container)
+  cleanups.push(mountMotionPanel(container))
+
+  const row = await waitFor(() => container.querySelector<HTMLElement>('[data-field="test.outline"]') ?? undefined)
+
+  expect(container.textContent).toContain("Sets the size.")
+  expect(row.title).toBe("")
+
+  const frames = () =>
+    [...document.body.children].flatMap((element) =>
+      element instanceof HTMLDivElement && element.style.position === "fixed" ? [element] : [],
+    )
+
+  row.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }))
+  row.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, movementX: 1 }))
+  // knobs reports what's active once a frame.
+  await waitFor(() => (frames().length > 0 ? true : undefined))
+  expect(frames().map((frame) => frame.style.left)).toEqual(["7px"])
+
+  row.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, relatedTarget: document.body }))
+  await waitFor(() => (frames().length === 0 ? true : undefined))
 })
 
 it("closes only from its own close button or Esc inside it, never from the app around it", async () => {

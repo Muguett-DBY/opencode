@@ -8,8 +8,7 @@ const presets = {
 }
 
 afterEach(() => {
-  motionTuning.set(motionGlobals.speed, 1)
-  motionTuning.set(motionGlobals.slow, false)
+  motionTuning.set(motionGlobals.speed, "1")
 })
 
 describe("motionTuning.spring", () => {
@@ -30,7 +29,7 @@ describe("motionTuning.spring", () => {
     expect(knob?.kind === "spring" && knob.initial).toEqual(presets.smooth)
   })
 
-  test("runs a preset applied to its knob, stretched by the global speed and slow motion", () => {
+  test("runs a preset applied to its knob, stretched by the global speed", () => {
     const spring = motionTuning.spring("test.scaled", { label: "Spring", group: "Test", presets })
     const knob = motionTuning.list().find((item) => item.id === "test.scaled")
 
@@ -38,11 +37,12 @@ describe("motionTuning.spring", () => {
     motionTuning.set(knob, knob.presets.calm)
     expect(spring()).toEqual({ duration: 0.4, bounce: 0 })
 
-    motionTuning.set(motionGlobals.speed, 2)
+    motionTuning.set(motionGlobals.speed, "2")
     expect(spring().duration).toBeCloseTo(0.2)
 
-    motionTuning.set(motionGlobals.slow, true)
-    expect(spring().duration).toBeCloseTo(0.8)
+    // Slow motion.
+    motionTuning.set(motionGlobals.speed, "0.25")
+    expect(spring().duration).toBeCloseTo(1.6)
   })
 })
 

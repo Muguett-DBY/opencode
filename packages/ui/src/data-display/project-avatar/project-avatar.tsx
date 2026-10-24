@@ -18,8 +18,11 @@ import "./project-avatar.css"
 export { generateProjectIcon, GENERATED_PROJECT_ICON_STYLE, type GeneratedProjectIcon } from "./generated"
 
 const avatarChoice = motionTuning.choice("projectAvatar.style", {
-  label: "Project avatars",
+  label: "Style",
   group: "Projects",
+  subsection: "Avatars",
+  description: "The mark for projects without an icon, on Home and in tabs.",
+  target: '[data-component="project-avatar-v2"]',
   experiment: true,
   value: "letters",
   labels: { letters: "Letters", generated: "Generated" },

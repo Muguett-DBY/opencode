@@ -9,6 +9,8 @@ export const sidebarPeekEnabled = motionTuning.toggle("sidebar.peek", {
   label: "Peekable sidebar",
   group: "Sidebars",
   subsection: "Peek",
+  description: "With the sidebar closed, resting on its toggle floats it over the app.",
+  target: 'button[aria-controls="vertical-tabs-sidebar"]',
   experiment: true,
   value: true,
 })

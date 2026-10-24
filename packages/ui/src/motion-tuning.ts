@@ -11,8 +11,12 @@ type Knob<Kind extends string, Value> = {
   label: string
   /** The area of the app it tunes: one card in the panel. */
   group: string
-  /** A sub-heading within the area's card, such as one feature among several. */
+  /** The feature it tunes within the area, such as one experiment among several; the area's own knobs have none. */
   subsection?: string
+  /** One plain line saying what the feature changes and where to see it; the first of a feature's knobs to say wins. */
+  description?: string
+  /** A CSS selector for the part of the app the feature changes, outlined while one of its rows is hovered or focused. */
+  target?: string
   /** The design experiment this knob switches on or between, marked as one in the panel. */
   experiment?: boolean
   /** Shown only while this holds, e.g. the controls of the option a choice selects. */
@@ -39,7 +43,15 @@ export type MotionKnob =
 
 export type MotionAction = { id: string; label: string; group: string; subsection?: string; run: () => void }
 
-type Meta = { label: string; group: string; subsection?: string; experiment?: boolean; when?: () => boolean }
+type Meta = {
+  label: string
+  group: string
+  subsection?: string
+  description?: string
+  target?: string
+  experiment?: boolean
+  when?: () => boolean
+}
 
 // Bumped when knobs are merged or renamed, so values saved for the old ones are dropped.
 const key = "opencode.motion.v2"
@@ -54,7 +66,7 @@ const listeners = new Set<() => void>()
 const saved = load()
 
 export const motionTuning = {
-  /** The spring to run now: its tuned duration scaled by the global speed and slow motion. */
+  /** The spring to run now: its tuned duration scaled by the global speed. */
   spring(id: string, meta: Meta & { presets: Record<MotionPreset, DurationOptions>; shipped?: MotionPreset }) {
     const initial = meta.presets[meta.shipped ?? "snappy"]
 
@@ -64,6 +76,8 @@ export const motionTuning = {
       label: meta.label,
       group: meta.group,
       subsection: meta.subsection,
+      description: meta.description,
+      target: meta.target,
       experiment: meta.experiment,
       when: meta.when,
       initial,
@@ -84,6 +98,8 @@ export const motionTuning = {
       label: meta.label,
       group: meta.group,
       subsection: meta.subsection,
+      description: meta.description,
+      target: meta.target,
       experiment: meta.experiment,
       when: meta.when,
       initial: meta.value,
@@ -106,6 +122,8 @@ export const motionTuning = {
       label: meta.label,
       group: meta.group,
       subsection: meta.subsection,
+      description: meta.description,
+      target: meta.target,
       experiment: meta.experiment,
       when: meta.when,
       initial,
@@ -121,6 +139,8 @@ export const motionTuning = {
       label: meta.label,
       group: meta.group,
       subsection: meta.subsection,
+      description: meta.description,
+      target: meta.target,
       experiment: meta.experiment,
       when: meta.when,
       initial: meta.value,
@@ -140,6 +160,8 @@ export const motionTuning = {
       label: meta.label,
       group: meta.group,
       subsection: meta.subsection,
+      description: meta.description,
+      target: meta.target,
       experiment: meta.experiment,
       when: meta.when,
       initial: meta.value,
@@ -152,7 +174,7 @@ export const motionTuning = {
     return () => knob.value as T
   },
   /**
-   * A tuned number. A `time` of "duration" is seconds, stretched by the global speed and slow motion; "rate" is per
+   * A tuned number. A `time` of "duration" is seconds, stretched by the global speed; "rate" is per
    * second, so it shrinks by the same factor.
    */
   number(
@@ -165,6 +187,8 @@ export const motionTuning = {
       label: meta.label,
       group: meta.group,
       subsection: meta.subsection,
+      description: meta.description,
+      target: meta.target,
       experiment: meta.experiment,
       when: meta.when,
       initial: meta.value,
@@ -211,33 +235,25 @@ export const motionTuning = {
   },
 }
 
-const speed = register({
-  kind: "number",
-  id: "speed",
+const speeds = ["0.25", "0.5", "1", "2"] as const
+
+// Every tuned animation runs at this speed; 0.25× is slow motion. Saved as its option's index, like any choice.
+const speed = register<Extract<MotionKnob, { kind: "choice" }>>({
+  kind: "choice",
+  id: "global.speed",
   label: "Speed",
   group: "Global",
-  initial: 1,
-  value: number("speed", 1),
-  min: 0.25,
-  max: 4,
-  step: 0.05,
-  unit: "×",
+  initial: "1",
+  value: speeds[number("global.speed", speeds.indexOf("1"))] ?? "1",
+  options: speeds,
+  labels: { "0.25": "0.25×", "0.5": "0.5×", "1": "1×", "2": "2×" },
 })
 
-const slow = register({
-  kind: "toggle",
-  id: "slow",
-  label: "Slow motion (0.25×)",
-  group: "Global",
-  initial: false,
-  value: number("slow", 0) === 1,
-})
-
-export const motionGlobals = { speed, slow }
+export const motionGlobals = { speed, time: timeScale }
 
 // How many times longer motion takes than tuned.
 function timeScale() {
-  return (slow.value ? 4 : 1) / speed.value
+  return 1 / Number(speed.value)
 }
 
 function register<K extends MotionKnob>(knob: K) {

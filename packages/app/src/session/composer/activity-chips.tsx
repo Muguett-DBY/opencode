@@ -12,8 +12,11 @@ import { useSettings } from "@/settings/model"
 import "./activity-chips.css"
 
 const chip = motionTuning.choice("activity.chip", {
-  label: en["experiment.activityChip"],
+  label: en["experiment.activityChip.style"],
   group: "Composer",
+  subsection: en["experiment.activityChip"],
+  description: "The chip above the composer while background work runs.",
+  target: '[data-component="session-activity-chips"]',
   experiment: true,
   value: "today",
   labels: { today: en["experiment.activityChip.today"], orb: en["experiment.activityChip.orb"] },
@@ -21,6 +24,7 @@ const chip = motionTuning.choice("activity.chip", {
 const corners = motionTuning.choice("activity.chip.corners", {
   label: en["experiment.chipCorners"],
   group: "Composer",
+  subsection: en["experiment.activityChip"],
   experiment: true,
   value: "capsule",
   labels: { capsule: en["experiment.chipCorners.capsule"], composer: en["experiment.chipCorners.composer"] },

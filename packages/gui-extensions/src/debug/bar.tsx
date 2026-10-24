@@ -255,10 +255,8 @@ export default function DebugBar(props: {
   })
 
   // The Motion workspace's global speed, kept in view while tuning.
-  const [globals, setGlobals] = createSignal({ speed: motionGlobals.speed.value, slow: motionGlobals.slow.value })
-  onCleanup(
-    motionTuning.subscribe(() => setGlobals({ speed: motionGlobals.speed.value, slow: motionGlobals.slow.value })),
-  )
+  const [speed, setSpeed] = createSignal(motionGlobals.speed.value)
+  onCleanup(motionTuning.subscribe(() => setSpeed(motionGlobals.speed.value)))
 
   const na = () => ctx.t("na").toUpperCase()
   const heap = () => (state.heap.limit ? (state.heap.used ?? 0) / state.heap.limit : undefined)
@@ -743,20 +741,20 @@ export default function DebugBar(props: {
               </Tooltip>
             )}
             <ToggleCell
-              active={globals().speed !== 1}
+              active={speed() !== "1"}
               inline={props.inline}
               label={ctx.t("speed.label")}
               tip={ctx.t("speed.tip")}
-              value={`${globals().speed.toFixed(2)}×`}
-              onClick={() => motionTuning.set(motionGlobals.speed, nextSpeed(globals().speed))}
+              value={motionGlobals.speed.labels[speed()]}
+              onClick={() => motionTuning.set(motionGlobals.speed, nextSpeed(speed()))}
             />
             <ToggleCell
-              active={globals().slow}
+              active={speed() === slow}
               inline={props.inline}
               label={ctx.t("slow.label")}
               tip={ctx.t("slow.tip")}
-              value={ctx.t(globals().slow ? "focus.on" : "focus.off")}
-              onClick={() => motionTuning.set(motionGlobals.slow, !globals().slow)}
+              value={ctx.t(speed() === slow ? "focus.on" : "focus.off")}
+              onClick={() => motionTuning.set(motionGlobals.speed, speed() === slow ? "1" : slow)}
             />
             <ToggleCell
               active={!!props.motion?.open}
@@ -773,7 +771,10 @@ export default function DebugBar(props: {
   )
 }
 
-// The bar's speed cell steps through the common slow-downs, then back to full speed.
-function nextSpeed(speed: number) {
-  return [0.5, 0.25, 1].find((step) => step < speed) ?? 1
+// Slow motion is the slowest speed.
+const slow = "0.25"
+
+// The bar's speed cell steps through the slow-downs, then back to full speed.
+function nextSpeed(speed: string) {
+  return ["0.5", slow, "1"].find((step) => Number(step) < Number(speed)) ?? "1"
 }

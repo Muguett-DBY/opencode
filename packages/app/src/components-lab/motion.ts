@@ -3,8 +3,8 @@ import { applyMotion, motionField } from "@opencode/ui/motion-tuning-fields"
 import { action, type Field, type Values } from "knobs"
 
 /**
- * The Knobs a story names in `parameters.motion` (ids, areas or sub-headings) and their replay buttons. Speed and slow motion
- * come along when there is motion to time.
+ * The Knobs a story names in `parameters.motion` (ids, areas or sub-headings) and their replay buttons. The global speed comes
+ * along when there is motion to time.
  */
 export function storyMotion(names: readonly string[]) {
   const named = (item: { id: string; group: string; subsection?: string }) =>
@@ -14,7 +14,7 @@ export function storyMotion(names: readonly string[]) {
   const actions = motionTuning.actions().filter(named)
   const timed = actions.length > 0 || knobs.some((item) => item.kind === "spring" || item.kind === "easing")
 
-  return { knobs, actions, globals: timed ? [motionGlobals.speed, motionGlobals.slow] : [] }
+  return { knobs, actions, globals: timed ? [motionGlobals.speed] : [] }
 }
 
 export type StoryMotion = ReturnType<typeof storyMotion>
@@ -30,7 +30,7 @@ export function sameMotion(a: StoryMotion, b: StoryMotion) {
   return left.length === right.length && left.every((item, index) => item === right[index])
 }
 
-/** One card per sub-heading (or area): its knobs and its replay buttons, then speed and slow motion. */
+/** One card per sub-heading (or area): its knobs and its replay buttons, then the speed. */
 export function motionFields(motion: StoryMotion): { [key: string]: Field } {
   return Object.fromEntries([
     ...motion.knobs.map((item) => [key(item), motionField(item, { label: item.label, group: group(item) })]),

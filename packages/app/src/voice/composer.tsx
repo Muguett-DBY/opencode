@@ -19,6 +19,7 @@ import "./voice.css"
 const toggle = motionTuning.toggle("voice.calls", {
   label: en["experiment.voiceCalls"],
   group: "Voice",
+  description: "A Call button in the composer for talking to the session out loud.",
   experiment: true,
   value: false,
 })

@@ -48,8 +48,8 @@ import {
 } from "./catalog"
 import { applyMotionPatch, motionFields, motionScopes, motionValues, sameMotion, storyMotion } from "./motion"
 
-// How long Play holds each state at full speed. Slow motion doubles it while the motion itself runs 4× longer, so
-// a transition still finishes and Play keeps moving.
+// How long Play holds each state at full speed. A slower speed stretches it by the square root of how much longer the
+// motion runs (0.25× doubles it while the motion runs 4× longer), so a transition still finishes and Play keeps moving.
 const hold = 1600
 
 const searchIcon = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>`
@@ -344,7 +344,7 @@ function Stage(props: { entry: LabEntry; inspector: HTMLElement; scheme: "dark" 
         preset(advancing)
         play()
       },
-      (hold * (motionGlobals.slow.value ? 2 : 1)) / motionGlobals.speed.value,
+      hold * Math.sqrt(motionGlobals.time()),
     )
   }
 

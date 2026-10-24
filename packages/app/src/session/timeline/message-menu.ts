@@ -3,7 +3,9 @@ import { createSignal } from "solid-js"
 
 const toggle = motionTuning.toggle("session.messageMenu", {
   label: "Message menu",
-  group: "Composer",
+  group: "Timeline",
+  description: "A ⋯ menu beside each message, instead of the hover info line.",
+  target: '[data-slot="message-options"]',
   experiment: true,
   value: false,
 })
