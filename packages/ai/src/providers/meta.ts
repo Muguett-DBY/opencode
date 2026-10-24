@@ -131,7 +131,7 @@ export const configure = (input: LanguageModelOptions = {}) => {
   const responses = (modelID: string | ModelID) =>
     configuredResponses.model<OpenResponsesProviderOptionsInput>({
       id: modelID,
-      compatibility: { responses: { toolVideo: "user" } },
+      compatibility: { toolVideo: "user" },
     })
   const chat = (modelID: string | ModelID) =>
     configuredChat.model<OpenResponsesProviderOptionsInput>({

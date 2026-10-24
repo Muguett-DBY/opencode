@@ -1908,7 +1908,7 @@ describe("OpenAI Responses route", () => {
       const custom = OpenAICompatibleResponses.route
         .with({ provider: "custom", endpoint: { baseURL: "https://provider.example/v1" } })
         .model({ id: "video-model" })
-      expect(xaiModel.compatibility?.responses).toEqual({ videoInput: "input_file" })
+      expect(xaiModel.compatibility?.videoInput).toBe("input_file")
       for (const item of [
         {
           name: "unknown provider uses input_video for user and tool video",
@@ -1918,7 +1918,7 @@ describe("OpenAI Responses route", () => {
         { name: "xAI user and tool video", model: xaiModel, input: fileInput },
         {
           name: "xAI video encoding can be reset to input_video",
-          model: LanguageModel.update(xaiModel, { compatibility: { responses: { videoInput: "input_video" } } }),
+          model: LanguageModel.update(xaiModel, { compatibility: { videoInput: "input_video" } }),
           input: videoInput,
         },
       ]) {
@@ -1927,7 +1927,7 @@ describe("OpenAI Responses route", () => {
       }
 
       const meta = Meta.configure({ apiKey: "test" }).responses("muse-spark-1.3")
-      expect(meta.compatibility?.responses).toEqual({ toolVideo: "user" })
+      expect(meta.compatibility?.toolVideo).toBe("user")
       const metaRequest = LLM.request({
         model: meta,
         messages: [
@@ -1966,13 +1966,13 @@ describe("OpenAI Responses route", () => {
       ])
       const genericHoist = yield* compileRequest(
         LLMRequest.update(metaRequest, {
-          model: LanguageModel.update(custom, { compatibility: { responses: { toolVideo: "user" } } }),
+          model: LanguageModel.update(custom, { compatibility: { toolVideo: "user" } }),
         }),
       )
       expect(genericHoist.body.input, "tool placement is provider-independent").toMatchObject(metaInput)
       const nested = yield* compileRequest(
         LLMRequest.update(metaRequest, {
-          model: LanguageModel.update(meta, { compatibility: { responses: { toolVideo: "nested" } } }),
+          model: LanguageModel.update(meta, { compatibility: { toolVideo: "nested" } }),
         }),
       )
       expect(nested.body.input, "Meta tool placement can be reset to nested").toMatchObject([

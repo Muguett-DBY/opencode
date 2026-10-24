@@ -32,6 +32,7 @@ import { effortUpdate } from "../effort-updates.js"
 import { OpenResponsesOptions } from "./utils/open-responses-options.js"
 import { Lifecycle } from "./utils/lifecycle.js"
 import { ToolStream } from "./utils/tool-stream.js"
+import { ResponsesCompatibility } from "../compatibility/open-responses.js"
 
 const ADAPTER = "open-responses"
 const NAME = "Open Responses"
@@ -523,7 +524,10 @@ const lowerMedia = Effect.fnUntraced(function* (part: MediaPart, request: LLMReq
   const url = ProviderShared.mediaUrl(part.media)
   const location = url ?? (yield* ProviderShared.requireInlineMedia(adapter.name, part.media)).dataUrl
   if (part.media.kind !== "image") {
-    if (part.media.kind === "video" && request.model.compatibility?.responses?.videoInput !== "input_file")
+    if (
+      part.media.kind === "video" &&
+      ResponsesCompatibility.resolve(request.model.compatibility).videoInput === "input_video"
+    )
       return { type: "input_video" as const, video_url: location }
     return {
       type: "input_file" as const,
@@ -568,6 +572,7 @@ const lowerToolResultOutput = Effect.fnUntraced(function* (
   // Text/json/error results are encoded as a plain string for backward
   // compatibility with existing cassettes and provider expectations.
   if (part.result.type !== "content") return { output: ProviderShared.toolResultText(part), videos: [] }
+  const compatibility = ResponsesCompatibility.resolve(request.model.compatibility)
   // Preserve the narrowed array element type when compiled through a consumer package.
   const content: ReadonlyArray<Content> = part.result.value
   const output: Array<Schema.Schema.Type<typeof OpenResponsesFunctionCallOutputContent>> = []
@@ -579,7 +584,7 @@ const lowerToolResultOutput = Effect.fnUntraced(function* (
     }
     const media = ProviderShared.toolFileMedia(item)
     const lowered = yield* lowerMedia(media, request, adapter)
-    if (media.media.kind === "video" && request.model.compatibility?.responses?.toolVideo === "user") {
+    if (media.media.kind === "video" && compatibility.toolVideo === "user") {
       videos.push(lowered)
       continue
     }

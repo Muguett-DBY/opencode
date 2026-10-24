@@ -91,7 +91,7 @@ export const configure = (input: LanguageModelOptions = {}) => {
   const responses = (modelID: string | ModelID) =>
     responsesRoute.model<XAIProviderOptionsInput>({
       id: modelID,
-      compatibility: { responses: { videoInput: "input_file" } },
+      compatibility: { videoInput: "input_file" },
     })
   const chat = (modelID: string | ModelID) => chatRoute.model<XAIProviderOptionsInput>({ id: modelID })
   const media = MediaRoute.deployment(input, auth(input))
