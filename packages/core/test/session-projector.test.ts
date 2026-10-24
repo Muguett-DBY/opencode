@@ -1138,4 +1138,87 @@ describe("SessionProjector", () => {
       })
     }),
   )
+
+  it.effect("replaces refs to missing blobs with an unavailable placeholder on read", () =>
+    Effect.gen(function* () {
+      const db = yield* seedSession()
+      const inbox = yield* SessionInbox.Service
+      const store = yield* SessionStore.Service
+      const hash = "b".repeat(64)
+      const userID = SessionMessage.ID.make("msg_missing_user")
+      const assistantID = SessionMessage.ID.make("msg_missing_assistant")
+      const inboxID = SessionMessage.ID.make("msg_missing_inbox")
+      const placeholder = Buffer.from("[media unavailable: shot.png (image/png)]").toString("base64")
+
+      yield* db
+        .insert(SessionMessageTable)
+        .values([
+          {
+            id: userID,
+            session_id: sessionID,
+            type: "user",
+            seq: 1,
+            time_created: 1,
+            data: {
+              text: "gone",
+              files: [{ uri: `media:${hash}`, mime: "image/png", bytes: 10, name: "shot.png" }] as any,
+              time: { created: 1 },
+            },
+          },
+          {
+            id: assistantID,
+            session_id: sessionID,
+            type: "assistant",
+            seq: 2,
+            time_created: 2,
+            data: {
+              agent: build,
+              model,
+              content: [
+                {
+                  type: "tool",
+                  id: "call_1",
+                  name: "read",
+                  executed: true,
+                  state: {
+                    status: "completed",
+                    input: { path: "shot.png" },
+                    content: [{ type: "file", uri: `/api/media/${hash}`, mime: "image/png", bytes: 10 }] as any,
+                  },
+                  time: { created: 2, ran: 2, completed: 2 },
+                },
+              ],
+              time: { created: 2, completed: 2 },
+            },
+          },
+        ])
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionInboxTable)
+        .values({
+          id: inboxID,
+          session_id: sessionID,
+          type: "user",
+          payload: { text: "queued", files: [{ uri: `media:${hash}`, mime: "image/png", name: "shot.png" }] as any },
+          delivery: "queue",
+          enqueued_seq: 3,
+          time_created: 3,
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      const messages = yield* store.messages({ sessionID, order: "asc" })
+      expect(messages[0]).toMatchObject({
+        files: [{ data: placeholder, mime: "text/plain", source: { type: "inline" }, name: "shot.png" }],
+      })
+      expect(messages[1]).toMatchObject({
+        content: [{ state: { content: [{ type: "text", text: "[media unavailable: image/png]" }] } }],
+      })
+      expect(yield* store.context(sessionID)).toEqual(messages)
+      const listed = yield* inbox.list(sessionID)
+      expect(listed[0]).toMatchObject({ payload: { files: [{ data: placeholder, mime: "text/plain" }] } })
+      expect(JSON.stringify([messages, listed])).not.toContain(hash)
+    }),
+  )
 })

@@ -78,6 +78,10 @@ export function collectHashes(data: Data, target = new Set<string>()) {
   return target
 }
 
+/** Stands in for a ref whose blob is gone, so readers and the model never see a bare `media:` ref. */
+export const unavailableText = (mime: string, name?: string) =>
+  `[media unavailable: ${name === undefined ? mime : `${name} (${mime})`}]`
+
 function hydrateData<T extends Data>(
   data: T,
   blobs: ReadonlyMap<string, { readonly mime: string; readonly base64: string }>,
@@ -86,14 +90,15 @@ function hydrateData<T extends Data>(
     let changed = false
     const files = (data.files as ReadonlyArray<StoredUserFile>).map((file) => {
       const hash = hashFromUri(file.uri)
-      const blob = hash ? blobs.get(hash) : undefined
-      if (!blob) return file
+      if (!hash) return file
+      const blob = blobs.get(hash)
       const { uri: _u, bytes: _b, width: _w, height: _h, origin, source, ...rest } = file
       changed = true
       return {
         ...rest,
-        data: blob.base64,
-        mime: file.mime || blob.mime,
+        ...(blob
+          ? { data: blob.base64, mime: file.mime || blob.mime }
+          : { data: Buffer.from(unavailableText(file.mime, file.name)).toString("base64"), mime: "text/plain" }),
         source: source ?? origin ?? { type: "inline" as const },
       }
     })
@@ -108,10 +113,11 @@ function hydrateData<T extends Data>(
     const items = part.state.content.map((item) => {
       if (item.type !== "file") return item
       const hash = hashFromUri(item.uri)
-      const blob = hash ? blobs.get(hash) : undefined
-      if (!blob) return item
-      const { bytes: _b, width: _w, height: _h, ...rest } = item as StoredToolFile
+      if (!hash) return item
+      const blob = blobs.get(hash)
       partChanged = true
+      if (!blob) return { type: "text" as const, text: unavailableText(item.mime, item.name) }
+      const { bytes: _b, width: _w, height: _h, ...rest } = item as StoredToolFile
       return {
         ...rest,
         uri: `data:${item.mime || blob.mime};base64,${blob.base64}`,
