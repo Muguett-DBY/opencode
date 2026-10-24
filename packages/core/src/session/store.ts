@@ -174,10 +174,7 @@ const layer = Layer.effect(
         const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
           Effect.orDie,
         )
-        return yield* Effect.forEach(
-          direction === "previous" ? rows.toReversed() : rows,
-          SessionHistory.decodeMessageRow,
-        )
+        return yield* SessionHistory.decodeMessageRows(db, direction === "previous" ? rows.toReversed() : rows)
       }),
       context: Effect.fn("SessionStore.context")((sessionID) => SessionHistory.load(db, sessionID, "latest")),
       message: Effect.fn("SessionStore.message")(function* (messageID) {
@@ -190,7 +187,7 @@ const layer = Layer.effect(
         return row
           ? {
               sessionID: row.session_id,
-              message: yield* SessionHistory.decodeMessageRow(row).pipe(Effect.orDie),
+              message: (yield* SessionHistory.decodeMessageRows(db, [row]).pipe(Effect.orDie))[0]!,
             }
           : undefined
       }),

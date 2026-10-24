@@ -9,6 +9,7 @@ import { SessionMessage } from "./message.js"
 import type { SessionSchema } from "./schema.js"
 import { Instructions } from "../instructions/index.js"
 import { InstructionState } from "./instruction-state.js"
+import { SessionMediaBlob } from "./media-blob.js"
 import { SessionRecentText } from "./recent-text.js"
 import { SessionMessageTable } from "./sql.js"
 
@@ -100,6 +101,14 @@ export const decodeMessageRow = (row: typeof SessionMessageTable.$inferSelect) =
     ),
   )
 
+/** Decodes rows after restoring media stored in `media_blob`. Reads that return media must use this. */
+export const decodeMessageRows = Effect.fnUntraced(function* (
+  db: DatabaseService,
+  rows: ReadonlyArray<typeof SessionMessageTable.$inferSelect>,
+) {
+  return yield* Effect.forEach(yield* SessionMediaBlob.hydrate(db, rows), decodeMessageRow)
+})
+
 const messageEntries = Effect.fnUntraced(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
@@ -122,7 +131,7 @@ const messageEntries = Effect.fnUntraced(function* (
     .orderBy(asc(SessionMessageTable.seq))
     .all()
     .pipe(Effect.orDie)
-  const decoded = yield* Effect.forEach(rows, (row) =>
+  const decoded = yield* Effect.forEach(yield* SessionMediaBlob.hydrate(db, rows), (row) =>
     decodeMessageRow(row).pipe(Effect.map((message) => ({ seq: row.seq, message }))),
   )
   // A window that cannot replay leaves nothing to start from, so read from the compaction before it.
@@ -176,7 +185,7 @@ const withRecentText = Effect.fnUntraced(function* (
     .orderBy(asc(SessionMessageTable.seq))
     .all()
     .pipe(Effect.orDie)
-  const kept = yield* Effect.forEach(rows, decodeMessageRow)
+  const kept = yield* decodeMessageRows(db, rows)
   const recent = kept.map(SessionRecentText.messageToText).filter(Boolean).join("\n\n")
   return [{ ...first, message: { ...compaction, metadata: { ...compaction.metadata, recent } } }, ...entries.slice(1)]
 })
@@ -248,7 +257,7 @@ export const firstUserMessage = Effect.fn("SessionHistory.firstUserMessage")(fun
     .get()
     .pipe(Effect.orDie)
   if (!row) return undefined
-  const message = yield* decodeMessageRow(row).pipe(Effect.orElseSucceed(() => undefined))
+  const [message] = yield* decodeMessageRows(db, [row]).pipe(Effect.orElseSucceed(() => []))
   return message?.type === "user" ? message : undefined
 })
 

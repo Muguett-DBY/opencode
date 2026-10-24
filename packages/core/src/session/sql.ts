@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index, primaryKey, real, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { blob, sqliteTable, text, integer, index, primaryKey, real, uniqueIndex } from "drizzle-orm/sqlite-core"
 import { sql } from "drizzle-orm"
 import { directoryColumn, pathColumn } from "../database/path.js"
 import { ProjectTable } from "../project/sql.js"
@@ -175,3 +175,35 @@ export const InstructionStateTable = sqliteTable("instruction_state", {
   initial_values: text({ mode: "json" }).notNull().$type<Instruction.Values>(),
   current_values: text({ mode: "json" }).notNull().$type<Instruction.Values>(),
 })
+
+export const MediaBlobTable = sqliteTable("media_blob", {
+  hash: text().primaryKey(),
+  mime: text().notNull(),
+  bytes: integer().notNull(),
+  width: integer(),
+  height: integer(),
+  data: blob({ mode: "buffer" }).notNull(),
+  time_created: integer()
+    .notNull()
+    .$default(() => Date.now()),
+})
+
+export const MediaRefTable = sqliteTable(
+  "media_ref",
+  {
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    message_id: text().$type<SessionMessage.ID>().notNull(),
+    hash: text()
+      .notNull()
+      .references(() => MediaBlobTable.hash, { onDelete: "cascade" }),
+    seq: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.session_id, table.message_id, table.hash] }),
+    index("media_ref_hash_idx").on(table.hash),
+    index("media_ref_session_seq_idx").on(table.session_id, table.seq),
+  ],
+)

@@ -24,7 +24,13 @@ import { fromRow } from "@opencode/core/session/info"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionStore } from "@opencode/core/session/store"
 import { Shell } from "@opencode/schema/shell"
-import { InstructionStateTable, SessionInboxTable, SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
+import {
+  InstructionStateTable,
+  MediaBlobTable,
+  SessionInboxTable,
+  SessionMessageTable,
+  SessionTable,
+} from "@opencode/core/session/sql"
 import { testEffect } from "./lib/effect"
 import { Snapshot } from "@opencode/core/snapshot"
 
@@ -991,6 +997,141 @@ describe("SessionProjector", () => {
         error: { type: "provider.invalid-request", message: "Failed" },
       })
       expect(yield* updated()).toEqual({ time_updated: 15 })
+    }),
+  )
+
+  it.effect("hydrates externalized media_blob references on message and inbox reads", () =>
+    Effect.gen(function* () {
+      const db = yield* seedSession()
+      const bus = yield* Bus.Service
+      const inbox = yield* SessionInbox.Service
+      const store = yield* SessionStore.Service
+
+      const rawBytes = Buffer.from("externalized-media-payload")
+      const base64 = rawBytes.toString("base64")
+      const hash = "a".repeat(64)
+      const uri = `/api/media/${hash}`
+
+      yield* db
+        .insert(MediaBlobTable)
+        .values({
+          hash,
+          mime: "application/pdf",
+          bytes: rawBytes.byteLength,
+          width: null,
+          height: null,
+          data: rawBytes,
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      const userID = SessionMessage.ID.make("msg_read_user")
+      const assistantID = SessionMessage.ID.make("msg_read_assistant")
+      const inboxID = SessionMessage.ID.make("msg_read_inbox")
+
+      yield* db
+        .insert(SessionMessageTable)
+        .values([
+          {
+            id: userID,
+            session_id: sessionID,
+            type: "user",
+            seq: 1,
+            time_created: 1,
+            data: {
+              text: "user attachment",
+              files: [{ uri, mime: "application/pdf", bytes: rawBytes.byteLength, name: "spec.pdf" }] as any,
+              time: { created: 1 },
+            },
+          },
+          {
+            id: assistantID,
+            session_id: sessionID,
+            type: "assistant",
+            seq: 2,
+            time_created: 2,
+            data: {
+              agent: build,
+              model,
+              content: [
+                {
+                  type: "tool",
+                  id: "call_1",
+                  name: "read",
+                  executed: true,
+                  state: {
+                    status: "completed",
+                    input: { path: "spec.pdf" },
+                    content: [{ type: "file", uri, mime: "application/pdf", bytes: rawBytes.byteLength, name: "spec.pdf" }] as any,
+                  },
+                  time: { created: 2, ran: 2, completed: 2 },
+                },
+              ],
+              time: { created: 2, completed: 2 },
+            },
+          },
+        ])
+        .run()
+        .pipe(Effect.orDie)
+
+      yield* db
+        .insert(SessionInboxTable)
+        .values({
+          id: inboxID,
+          session_id: sessionID,
+          type: "user",
+          payload: {
+            text: "queued attachment",
+            files: [{ uri, mime: "application/pdf", bytes: rawBytes.byteLength, name: "queued.pdf" }] as any,
+          },
+          delivery: "queue",
+          enqueued_seq: 3,
+          time_created: 3,
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      const messages = yield* store.messages({ sessionID, order: "asc" })
+      expect(messages).toHaveLength(2)
+      expect(messages[0]).toMatchObject({
+        id: userID,
+        type: "user",
+        files: [{ data: base64, mime: "application/pdf", source: { type: "inline" }, name: "spec.pdf" }],
+      })
+      expect(messages[1]).toMatchObject({
+        id: assistantID,
+        type: "assistant",
+        content: [
+          {
+            type: "tool",
+            state: {
+              status: "completed",
+              content: [{ type: "file", uri: `data:application/pdf;base64,${base64}`, mime: "application/pdf", name: "spec.pdf" }],
+            },
+          },
+        ],
+      })
+
+      expect((yield* store.message(userID))?.message).toEqual(messages[0]!)
+      expect(yield* store.context(sessionID)).toEqual(messages)
+
+      const listedInbox = yield* inbox.list(sessionID)
+      expect(listedInbox).toHaveLength(1)
+      expect(listedInbox[0]).toMatchObject({
+        id: inboxID,
+        type: "user",
+        payload: {
+          text: "queued attachment",
+          files: [{ data: base64, mime: "application/pdf", source: { type: "inline" }, name: "queued.pdf" }],
+        },
+      })
+
+      yield* bus.publish(SessionEvent.InboxDelivered, { sessionID, inboxID })
+      expect((yield* store.message(inboxID))?.message).toMatchObject({
+        id: inboxID,
+        type: "user",
+        files: [{ data: base64, mime: "application/pdf", source: { type: "inline" }, name: "queued.pdf" }],
+      })
     }),
   )
 })

@@ -311,7 +311,7 @@ const layer = Layer.effect(
               .limit(3)
               .all()
               .pipe(Effect.orDie)
-            const recent = yield* Effect.forEach(rows, SessionHistory.decodeMessageRow)
+            const recent = yield* SessionHistory.decodeMessageRows(db, rows)
             const exhausted =
               recent.length === 3 &&
               recent.every((message) => message.type === "assistant" && message.finish === "length")

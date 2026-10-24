@@ -20,6 +20,7 @@ import { Database } from "../database/database.js"
 import { Bus } from "../bus.js"
 import { KeyedMutex } from "../effect/keyed-mutex.js"
 import { SessionEvent } from "./event.js"
+import { SessionMediaBlob } from "./media-blob.js"
 import { SessionMessage } from "./message.js"
 import { SessionSchema } from "./schema.js"
 import { SessionInboxTable, SessionMessageTable } from "./sql.js"
@@ -107,7 +108,9 @@ const fromRow = (row: typeof SessionInboxTable.$inferSelect): Info => {
 
 export const find = Effect.fn("SessionInbox.find")(function* (db: DatabaseService, id: SessionMessage.ID) {
   const row = yield* db.select().from(SessionInboxTable).where(eq(SessionInboxTable.id, id)).get().pipe(Effect.orDie)
-  return row === undefined ? undefined : fromRow(row)
+  if (row === undefined) return undefined
+  const [hydrated] = yield* SessionMediaBlob.hydrateInbox(db, [row])
+  return fromRow(hydrated!)
 })
 
 const promotedFromMessage = Effect.fn("SessionInbox.promotedFromMessage")(function* (
@@ -125,7 +128,8 @@ const promotedFromMessage = Effect.fn("SessionInbox.promotedFromMessage")(functi
   if (row === undefined) return undefined
   if (row.session_id !== sessionID || (row.type !== "user" && row.type !== "synthetic"))
     return yield* new LifecycleConflict({ id })
-  const message = SessionHistory.decodeMessageRowSync(row)
+  const [message] = yield* SessionHistory.decodeMessageRows(db, [row]).pipe(Effect.orDie)
+  if (!message) return undefined
   const base = { id, sessionID, time: { created: message.time.created }, delivery }
   if (message.type === "user")
     return User.make({
@@ -341,7 +345,8 @@ export const projectDelivered = Effect.fn("SessionInbox.projectDelivered")(funct
     .get()
     .pipe(Effect.orDie)
   if (!deleted) return yield* Effect.die(new LifecycleConflict({ id: input.id }))
-  return fromRow(deleted)
+  const [hydrated] = yield* SessionMediaBlob.hydrateInbox(db, [deleted])
+  return fromRow(hydrated!)
 })
 
 export const projectCancelled = Effect.fn("SessionInbox.projectCancelled")(function* (
@@ -400,7 +405,7 @@ export const list = Effect.fn("SessionInbox.list")(function* (db: DatabaseServic
     .orderBy(asc(SessionInboxTable.enqueued_seq))
     .all()
     .pipe(Effect.orDie)
-  return rows.map(fromRow)
+  return (yield* SessionMediaBlob.hydrateInbox(db, rows)).map(fromRow)
 })
 
 export const moveIDs = Effect.fn("SessionInbox.moveIDs")(function* (db: DatabaseService, sessionID: SessionSchema.ID) {
@@ -419,7 +424,7 @@ export const nextPromotable = Effect.fn("SessionInbox.nextPromotable")(function*
   promotable: Promotable,
 ) {
   const steer = (yield* pendingSteers(db, sessionID))[0]
-  if (steer) return fromRow(steer)
+  if (steer) return fromRow((yield* SessionMediaBlob.hydrateInbox(db, [steer]))[0]!)
   if (promotable !== "input") return undefined
   const queued = yield* db
     .select()
@@ -429,7 +434,7 @@ export const nextPromotable = Effect.fn("SessionInbox.nextPromotable")(function*
     .limit(1)
     .get()
     .pipe(Effect.orDie)
-  return queued ? fromRow(queued) : undefined
+  return queued ? fromRow((yield* SessionMediaBlob.hydrateInbox(db, [queued]))[0]!) : undefined
 })
 
 /** Which pending rows count: "input" means any item in either delivery mode. */
