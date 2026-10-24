@@ -156,10 +156,9 @@ export class DecisionModelCompatibility extends Schema.Class<DecisionModelCompat
   {
     /**
      * Where a System One host reads media, from models.dev `[api.systemone] compatibility.image_input`:
-     * `assets` (TypeSafe's assets map), `images` (top-level lists), `state` (items inside a state list) or
-     * `messages` (parts in a user message inside `state.messages`).
+     * `assets` (TypeSafe's assets map), `images` (top-level lists) or `state` (items inside a state list).
      */
-    imageInput: Schema.optional(Schema.Literals(["assets", "images", "state", "messages"])),
+    imageInput: Schema.optional(Schema.Literals(["assets", "images", "state"])),
   },
 ) {}
 

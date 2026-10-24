@@ -1,8 +1,10 @@
+import { Effect } from "effect"
 import type { ProviderPackage } from "../provider-package.js"
 import { OpenAIChat } from "../protocols/openai-chat.js"
 import { SystemOne } from "../protocols/system-one.js"
 import { AuthOptions, type ProviderAuthOption } from "../route/auth-options.js"
 import { Route, type RouteDefaultsInput } from "../route/client.js"
+import { DecisionRoute } from "../route/decision.js"
 import { Endpoint } from "../route/endpoint.js"
 import { ProviderID, type ModelID } from "../schema/index.js"
 import type { OpenAIProviderOptionsInput } from "./openai-options.js"
@@ -38,6 +40,17 @@ export const route = Route.make({
 
 export const routes = [route]
 
+// Baseten reads media only as parts in a user message inside `state.messages`, not in any of the System One
+// placements models.dev describes, so its decision protocol fixes that placement.
+const decisionProtocol = DecisionRoute.protocol({
+  ...SystemOne.protocol,
+  id: "baseten-system-one",
+  body: {
+    from: (request) =>
+      SystemOne.encodeBody(request, "messages").pipe(Effect.map((body) => ({ ...body, model: request.model.id }))),
+  },
+})
+
 export const configure = (input: LanguageModelOptions = {}) => {
   const { apiKey: _apiKey, auth: _auth, baseURL: endpoint, ...defaults } = input
   const auth = AuthOptions.bearer(input, "BASETEN_API_KEY")
@@ -46,16 +59,17 @@ export const configure = (input: LanguageModelOptions = {}) => {
     endpoint: { baseURL: endpoint ?? baseURL },
     auth,
   })
-  const decisionRoute = SystemOne.route.with({
+  const decisionRoute = DecisionRoute.make({
+    id: decisionProtocol.id,
     provider: id,
     providerMetadataKey: "baseten",
-    endpoint: { baseURL: endpoint ?? baseURL },
+    protocol: decisionProtocol,
+    endpoint: Endpoint.path("/systemone", { baseURL: endpoint ?? baseURL }),
     auth,
     headers: input.headers,
     http: input.http,
   })
-  const decision = (modelID: string | ModelID) =>
-    decisionRoute.model<BasetenDecisionOptions>({ id: modelID, compatibility: { imageInput: "messages" } })
+  const decision = (modelID: string | ModelID) => decisionRoute.model<BasetenDecisionOptions>({ id: modelID })
   return {
     id,
     model: (modelID: string | ModelID) => configured.model<OpenAIProviderOptionsInput>({ id: modelID }),

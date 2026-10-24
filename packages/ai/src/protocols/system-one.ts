@@ -19,7 +19,8 @@ export const DEFAULT_PATH = "/systemone"
 
 export const DEFAULT_BASE_URL = "https://api.typesafe.ai/v1"
 
-type ImageInput = NonNullable<DecisionModelCompatibility["imageInput"]>
+/** `messages` is Baseten's own placement (parts in a user message inside `state.messages`), set by its provider. */
+type ImageInput = NonNullable<DecisionModelCompatibility["imageInput"]> | "messages"
 
 const Probability = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
 const Answer = Schema.Union([
