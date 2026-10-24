@@ -1,5 +1,5 @@
 import { Cause, Context, Duration, Effect, Layer, Option, Schedule, Schema, Semaphore } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/http"
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
 import { ModelsDev } from "@opencode/schema/models-dev"
 import { Money } from "@opencode/schema/money"
 import { App } from "./app.js"
@@ -295,8 +295,10 @@ const Cache = Schema.Struct({
   // Digest of the raw body, persisted so refresh() can skip republishing a
   // byte-identical catalog. Optional for entries written before it existed.
   digest: Schema.optional(Schema.String),
+  etag: Schema.optional(Schema.String),
   body: CatalogJson,
 })
+const RawCache = Schema.Struct({ ...Cache.fields, body: Schema.String })
 const defaultSource = "https://models.opencode.ai"
 
 // Bundled snapshot of https://models.opencode.ai/api.json, committed at
@@ -363,11 +365,12 @@ export const layer = (options?: Options) =>
         if (value !== undefined) yield* kv.remove(key)
       })
 
-      const fetchApi = Effect.fn("ModelsDev.fetchApi")(function* () {
+      const fetchApi = Effect.fn("ModelsDev.fetchApi")(function* (etag?: string) {
         return yield* HttpClientRequest.get(`${source}/api.json`).pipe(
           HttpClientRequest.setHeader("User-Agent", userAgent),
+          HttpClientRequest.setHeaders(etag ? { "If-None-Match": etag } : {}),
           http.execute,
-          Effect.flatMap((res) => res.text),
+          Effect.flatMap((res) => Effect.map(res.text, (text) => ({ text, etag: res.headers.etag }))),
           Effect.timeout("10 seconds"),
         )
       })
@@ -387,8 +390,12 @@ export const layer = (options?: Options) =>
       // population. The payload has outgrown some KV backends' per-value
       // limits (Durable Object SQLite caps values at 2 MB and api.json
       // passed it in Aug 2026); a boot without a cache hit just refetches.
-      const writeCache = Effect.fn("ModelsDev.writeCache")(function* (text: string, digest = bodyDigest(text)) {
-        yield* kv.set(key, { updatedAt: Date.now(), digest, body: text }).pipe(
+      const writeCache = Effect.fn("ModelsDev.writeCache")(function* (
+        text: string,
+        etag: string | undefined,
+        digest = bodyDigest(text),
+      ) {
+        yield* kv.set(key, { updatedAt: Date.now(), digest, ...(etag ? { etag } : {}), body: text }).pipe(
           Effect.catchCauseIf(
             (cause) => !Cause.hasInterruptsOnly(cause),
             (cause) => Effect.logWarning("Failed to cache models.dev catalog", { cause }),
@@ -397,9 +404,9 @@ export const layer = (options?: Options) =>
       })
 
       const fetchAndWrite = Effect.fn("ModelsDev.fetchAndWrite")(function* () {
-        const text = yield* fetchApi()
-        const catalog = yield* decodeCatalog(text)
-        yield* writeCache(text)
+        const response = yield* fetchApi()
+        const catalog = yield* decodeCatalog(response.text)
+        yield* writeCache(response.text, response.etag)
         return catalog
       })
 
@@ -429,16 +436,25 @@ export const layer = (options?: Options) =>
         yield* lock
           .withPermit(
             Effect.gen(function* () {
-              const stored = yield* loadFromCache()
+              const stored = Option.getOrUndefined(Schema.decodeUnknownOption(RawCache)(yield* kv.get(key)))
               if (!force && stored && Date.now() - stored.updatedAt < Duration.toMillis(ttl)) return
-              const text = yield* fetchApi()
-              const digest = bodyDigest(text)
-              // models.dev rarely changes between polls; skip the cache write,
-              // invalidation, and Refreshed event for a byte-identical body so
-              // downstream provider/model update listeners stay quiet.
-              if (!force && stored?.digest === digest) return
-              yield* decodeCatalog(text)
-              yield* writeCache(text, digest)
+              const response = yield* fetchApi(force ? undefined : stored?.etag).pipe(
+                Effect.catchIf(
+                  (error) => HttpClientError.isHttpClientError(error) && error.response?.status === 304,
+                  () => Effect.undefined,
+                ),
+              )
+              const digest = response && bodyDigest(response.text)
+              // models.dev rarely changes between polls; skip invalidation and
+              // the Refreshed event for a byte-identical body so downstream
+              // provider/model update listeners stay quiet.
+              if (!force && stored && (!response || stored.digest === digest)) {
+                yield* writeCache(stored.body, response?.etag ?? stored.etag, stored.digest)
+                return
+              }
+              if (!response) return
+              yield* decodeCatalog(response.text)
+              yield* writeCache(response.text, response.etag, digest)
               yield* invalidate
               yield* bus.publish(ModelsDev.Event.Refreshed, {}, { global: true })
             }),

@@ -155,7 +155,8 @@ const fixture2Snapshot = [
 interface MockState {
   body: string
   status: number
-  calls: Array<{ url: string; userAgent: string | null }>
+  etag?: string
+  calls: Array<{ url: string; userAgent: string | null; ifNoneMatch?: string }>
 }
 
 const makeMockClient = (state: Ref.Ref<MockState>) =>
@@ -163,10 +164,23 @@ const makeMockClient = (state: Ref.Ref<MockState>) =>
     Effect.gen(function* () {
       yield* Ref.update(state, (s) => ({
         ...s,
-        calls: [...s.calls, { url: request.url, userAgent: request.headers["user-agent"] ?? null }],
+        calls: [
+          ...s.calls,
+          {
+            url: request.url,
+            userAgent: request.headers["user-agent"] ?? null,
+            ifNoneMatch: request.headers["if-none-match"],
+          },
+        ],
       }))
       const s = yield* Ref.get(state)
-      return HttpClientResponse.fromWeb(request, new Response(s.body, { status: s.status }))
+      return HttpClientResponse.fromWeb(
+        request,
+        new Response(s.status === 304 ? null : s.body, {
+          status: s.status,
+          headers: s.etag ? { etag: s.etag } : {},
+        }),
+      )
     }),
   )
 
@@ -567,9 +581,8 @@ describe("ModelsDev Service", () => {
     Effect.gen(function* () {
       const cache = makeCache()
       writeCache(cache, fixture, Date.now() - 10 * 60 * 1000)
-      const seeded = structuredClone(cache.values.get(cacheKey))
       // The server serves a byte-identical body, so the refresh still hits
-      // the network but must not rewrite the cache or publish Refreshed.
+      // the network but must only record the check time, not publish Refreshed.
       const state = yield* Ref.make(initialState)
       yield* provided(
         state,
@@ -594,7 +607,45 @@ describe("ModelsDev Service", () => {
       )
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBe(1)
-      expect(cache.values.get(cacheKey)).toEqual(seeded)
+      expect(cache.values.get(cacheKey)).toMatchObject({ digest: bodyDigest(JSON.stringify(fixture)) })
+      expect(Date.now() - (cache.values.get(cacheKey) as { updatedAt: number }).updatedAt).toBeLessThan(60 * 1000)
+    }),
+  )
+
+  it.live("refresh(false) revalidates with the stored ETag and treats 304 as unchanged", () =>
+    Effect.gen(function* () {
+      const cache = makeCache()
+      const state = yield* Ref.make<MockState>({ ...initialState, etag: 'W/"v1"' })
+      yield* provided(
+        state,
+        cache,
+        Effect.gen(function* () {
+          const svc = yield* ModelsDev.Service
+          yield* svc.refresh(true)
+          const stored = cache.values.get(cacheKey) as { updatedAt: number }
+          cache.values.set(cacheKey, { ...stored, updatedAt: Date.now() - 10 * 60 * 1000 })
+          yield* Ref.update(state, (s) => ({ ...s, status: 304 }))
+          const bus = yield* Bus.Service
+          const event = yield* bus.subscribe(ModelsDev.Event.Refreshed).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped,
+            Effect.flatMap((fiber) =>
+              Effect.gen(function* () {
+                yield* Effect.yieldNow
+                yield* svc.refresh(false)
+                return yield* Fiber.join(fiber).pipe(Effect.timeoutOption("50 millis"))
+              }),
+            ),
+          )
+          expect(event._tag).toBe("None")
+          expect(yield* svc.get()).toEqual(fixtureSnapshot)
+        }),
+      )
+      const final = yield* Ref.get(state)
+      expect(final.calls.map((call) => call.ifNoneMatch)).toEqual([undefined, 'W/"v1"'])
+      expect(cache.values.get(cacheKey)).toMatchObject({ etag: 'W/"v1"', body: JSON.stringify(fixture) })
+      expect(Date.now() - (cache.values.get(cacheKey) as { updatedAt: number }).updatedAt).toBeLessThan(60 * 1000)
     }),
   )
 
