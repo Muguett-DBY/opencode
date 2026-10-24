@@ -1905,23 +1905,31 @@ describe("OpenAI Responses route", () => {
           output: [{ type: "input_video", video_url: "https://example.com/clip.mp4" }],
         },
       ]
+      const custom = OpenAICompatibleResponses.route
+        .with({ provider: "custom", endpoint: { baseURL: "https://provider.example/v1" } })
+        .model({ id: "video-model" })
+      expect(xaiModel.compatibility?.responses).toEqual({ videoInput: "input_file" })
       for (const item of [
         {
           name: "unknown provider uses input_video for user and tool video",
-          model: OpenAICompatibleResponses.route
-            .with({ provider: "custom", endpoint: { baseURL: "https://provider.example/v1" } })
-            .model({ id: "video-model" }),
+          model: custom,
           input: videoInput,
         },
-        { name: "native OpenAI serialization also uses input_video", model, input: videoInput },
         { name: "xAI user and tool video", model: xaiModel, input: fileInput },
+        {
+          name: "xAI video encoding can be reset to input_video",
+          model: LanguageModel.update(xaiModel, { compatibility: { responses: { videoInput: "input_video" } } }),
+          input: videoInput,
+        },
       ]) {
         const prepared = yield* compileRequest(LLM.request({ model: item.model, messages }))
         expect(prepared.body.input, item.name).toMatchObject(item.input)
       }
 
+      const meta = Meta.configure({ apiKey: "test" }).responses("muse-spark-1.3")
+      expect(meta.compatibility?.responses).toEqual({ toolVideo: "user" })
       const metaRequest = LLM.request({
-        model: Meta.configure({ apiKey: "test" }).responses("muse-spark-1.3"),
+        model: meta,
         messages: [
           Message.assistant([
             ToolCallPart.make({ id: "call_video", name: "record", input: {} }),
@@ -1955,6 +1963,27 @@ describe("OpenAI Responses route", () => {
       expect(continued.body.input, "Meta flushes videos before the next user message").toMatchObject([
         ...metaInput,
         { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+      ])
+      const genericHoist = yield* compileRequest(
+        LLMRequest.update(metaRequest, {
+          model: LanguageModel.update(custom, { compatibility: { responses: { toolVideo: "user" } } }),
+        }),
+      )
+      expect(genericHoist.body.input, "tool placement is provider-independent").toMatchObject(metaInput)
+      const nested = yield* compileRequest(
+        LLMRequest.update(metaRequest, {
+          model: LanguageModel.update(meta, { compatibility: { responses: { toolVideo: "nested" } } }),
+        }),
+      )
+      expect(nested.body.input, "Meta tool placement can be reset to nested").toMatchObject([
+        { type: "function_call", call_id: "call_video", name: "record", arguments: "{}" },
+        { type: "function_call", call_id: "call_text", name: "read", arguments: "{}" },
+        {
+          type: "function_call_output",
+          call_id: "call_video",
+          output: [{ type: "input_video", video_url: "https://example.com/clip.mp4" }],
+        },
+        { type: "function_call_output", call_id: "call_text", output: "plain result" },
       ])
     }),
   )

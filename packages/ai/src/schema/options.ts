@@ -213,6 +213,12 @@ export type LanguageModelCacheFormatCompatibility = Schema.Schema.Type<typeof La
 export class LanguageModelCompatibility extends Schema.Class<LanguageModelCompatibility>(
   "LLM.LanguageModelCompatibility",
 )({
+  responses: Schema.optional(
+    Schema.Struct({
+      videoInput: Schema.optional(Schema.Literals(["input_video", "input_file"])),
+      toolVideo: Schema.optional(Schema.Literals(["nested", "user"])),
+    }),
+  ),
   sanitizer: Schema.optional(LanguageModelSanitizerCompatibility),
   reasoningField: Schema.optional(Schema.String),
   /** Require every assistant message to include its reasoning field, even when empty. */
