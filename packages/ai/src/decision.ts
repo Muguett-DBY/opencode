@@ -145,33 +145,51 @@ export type AnswersFor<Questions extends DecisionQuestions> = {
 
 export type DecisionOptions = Record<string, unknown>
 
-export interface DecisionRoute<Options extends DecisionOptions = DecisionOptions> {
+/** What a decision model's route does; `DecisionRoute.make(...).model(...)` builds one from a protocol. */
+export interface DecisionModelRoute<Options extends DecisionOptions = DecisionOptions> {
   readonly id: string
-  /** URL media is downloaded before `generate` for hosts that only take inline data. */
-  readonly inlineMedia?: boolean
   generate(request: DecisionRequestFor<Options>, execute: Execute): Effect.Effect<DecisionResponse, AIError>
+}
+
+/** Host quirks a protocol adapts to, like `LanguageModelCompatibility` for language models. */
+export class DecisionModelCompatibility extends Schema.Class<DecisionModelCompatibility>("Decision.ModelCompatibility")(
+  {
+    /**
+     * Where a System One host reads media, from models.dev `[api.systemone] compatibility.image_input`:
+     * `assets` (TypeSafe's assets map), `images` (top-level lists) or `state` (items inside a state list).
+     */
+    imageInput: Schema.optional(Schema.Literals(["assets", "images", "state"])),
+  },
+) {}
+
+export namespace DecisionModelCompatibility {
+  export type Input = DecisionModelCompatibility | ConstructorParameters<typeof DecisionModelCompatibility>[0]
+
+  export const make = (input: Input) =>
+    input instanceof DecisionModelCompatibility ? input : new DecisionModelCompatibility(input)
 }
 
 export class DecisionModel<Options extends DecisionOptions = DecisionOptions> {
   declare protected readonly _Options: Options
   readonly id: ModelID
   readonly provider: ProviderID
-  readonly route: DecisionRoute<Options>
+  readonly route: DecisionModelRoute<Options>
   readonly http?: HttpOptions
+  readonly compatibility?: DecisionModelCompatibility
 
   constructor(input: DecisionModel.Input<Options>) {
     this.id = input.id
     this.provider = input.provider
     this.route = input.route
     this.http = input.http
+    this.compatibility = input.compatibility
   }
 
   static make<Options extends DecisionOptions = DecisionOptions>(input: DecisionModel.MakeInput<Options>) {
     return new DecisionModel<Options>({
+      ...input,
       id: ModelID.make(input.id),
       provider: ProviderID.make(input.provider),
-      route: input.route,
-      http: input.http,
     })
   }
 }
@@ -180,8 +198,9 @@ export namespace DecisionModel {
   export interface Input<Options extends DecisionOptions = DecisionOptions> {
     readonly id: ModelID
     readonly provider: ProviderID
-    readonly route: DecisionRoute<Options>
+    readonly route: DecisionModelRoute<Options>
     readonly http?: HttpOptions
+    readonly compatibility?: DecisionModelCompatibility
   }
 
   export interface MakeInput<Options extends DecisionOptions = DecisionOptions>

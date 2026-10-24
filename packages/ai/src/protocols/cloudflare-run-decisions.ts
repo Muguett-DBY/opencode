@@ -1,10 +1,11 @@
 import { Effect, Schema } from "effect"
-import { DecisionModel, type DecisionRequestFor, type DecisionResponse } from "../decision.js"
+import { DecisionRoute } from "../route/decision.js"
 import { Endpoint } from "../route/endpoint.js"
 import { MediaProtocol } from "../route/media-protocol.js"
-import { MediaRoute } from "../route/media.js"
-import type { ProviderID } from "../schema/index.js"
 import { SystemOne } from "./system-one.js"
+
+const ID = "cloudflare-run-decisions"
+const NAME = "Cloudflare Run"
 
 // Workers AI models answer with the System One response; third-party models such as TypeSafe Jev wrap it in a
 // completed run record.
@@ -15,56 +16,40 @@ const Envelope = Schema.Struct({
   ]),
 })
 
-export interface ModelInput extends MediaRoute.ModelInput {
-  /** Also the provider metadata key. */
-  readonly provider: ProviderID
-  /** The Run API base, `.../client/v4/accounts/{account}/ai/run`. */
-  readonly baseURL: string
-}
+const decodeEnvelope = MediaProtocol.identity({ id: ID, name: NAME, provider: "cloudflare-workers-ai" }).decodeJson(
+  Envelope,
+)
 
-/**
- * Posts `{ model, input }` to Cloudflare's `/ai/run` with the System One body as `input`. Media goes in Clef's
- * top-level `images`, `audio` and `videos` lists.
- */
-export const model = (input: ModelInput) => {
-  const route = MediaProtocol.identity({
-    id: "cloudflare-run-decisions",
-    name: "Cloudflare Run",
-    provider: input.provider,
-  })
-  const decode = route.decodeJson(Envelope)
-  const composed = MediaRoute.inline({
-    protocol: MediaProtocol.inline<DecisionRequestFor, DecisionResponse>(route, {
-      body: {
-        from: (request) =>
-          SystemOne.encodeBody(request, "images").pipe(
-            Effect.map((body) => MediaProtocol.json({ model: request.model.id, input: body })),
+/** Posts `{ model, input }` to Cloudflare's `/ai/run` with the System One body as `input`; media defaults to Clef's top-level lists. */
+export const protocol = DecisionRoute.protocol({
+  id: ID,
+  name: NAME,
+  inlineMedia: true,
+  body: {
+    from: (request) =>
+      SystemOne.encodeBody(request, "images").pipe(Effect.map((input) => ({ model: request.model.id, input }))),
+  },
+  response: {
+    decode: (response, context) =>
+      decodeEnvelope(response).pipe(
+        Effect.flatMap((output) =>
+          SystemOne.toResponse(
+            "answers" in output.value.result ? output.value.result : output.value.result.result,
+            context.request,
+            context.providerMetadataKey,
+            output.invalid,
           ),
-      },
-      response: {
-        decode: (response, context) =>
-          decode(response).pipe(
-            Effect.flatMap((output) =>
-              SystemOne.toResponse(
-                "answers" in output.value.result ? output.value.result : output.value.result.result,
-                context.request,
-                input.provider,
-                output.invalid,
-              ),
-            ),
-          ),
-      },
-    }),
-    endpoint: Endpoint.path<MediaProtocol.Body, DecisionRequestFor>("", { baseURL: input.baseURL }),
-    auth: input.auth,
-    headers: input.headers,
-  })
-  return DecisionModel.make({
-    id: input.id,
-    provider: input.provider,
-    http: input.http,
-    route: { id: composed.id, inlineMedia: true, generate: composed.generate },
-  })
-}
+        ),
+      ),
+  },
+})
 
-export const CloudflareRunDecisions = { model } as const
+/** Providers set the Run API base, `.../client/v4/accounts/{account}/ai/run`, with `route.with(...)`. */
+export const route = DecisionRoute.make({
+  id: ID,
+  provider: "cloudflare-workers-ai",
+  protocol,
+  endpoint: Endpoint.path(""),
+})
+
+export const CloudflareRunDecisions = { protocol, route } as const

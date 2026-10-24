@@ -4,7 +4,7 @@ import { SystemOne } from "../protocols/system-one.js"
 import { AuthOptions, type ProviderAuthOption } from "../route/auth-options.js"
 import { Route, type RouteDefaultsInput } from "../route/client.js"
 import { Endpoint } from "../route/endpoint.js"
-import { HttpOptions, ProviderID, type ModelID } from "../schema/index.js"
+import { ProviderID, type ModelID } from "../schema/index.js"
 import type { OpenAIProviderOptionsInput } from "./openai-options.js"
 
 export const id = ProviderID.make("baseten")
@@ -46,15 +46,15 @@ export const configure = (input: LanguageModelOptions = {}) => {
     endpoint: { baseURL: endpoint ?? baseURL },
     auth,
   })
-  const decision = (modelID: string | ModelID) =>
-    SystemOne.model<BasetenDecisionOptions>({
-      id: modelID,
-      provider: id,
-      auth,
-      baseURL: endpoint ?? baseURL,
-      headers: input.headers,
-      http: HttpOptions.make(input.http),
-    })
+  const decisionRoute = SystemOne.route.with({
+    provider: id,
+    providerMetadataKey: "baseten",
+    endpoint: { baseURL: endpoint ?? baseURL },
+    auth,
+    headers: input.headers,
+    http: input.http,
+  })
+  const decision = (modelID: string | ModelID) => decisionRoute.model<BasetenDecisionOptions>({ id: modelID })
   return {
     id,
     model: (modelID: string | ModelID) => configured.model<OpenAIProviderOptionsInput>({ id: modelID }),

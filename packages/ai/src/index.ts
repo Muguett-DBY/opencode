@@ -88,6 +88,7 @@ export {
   DecisionJsonPart,
   DecisionMediaPart,
   DecisionModel,
+  DecisionModelCompatibility,
   DecisionModelSchema,
   DecisionPart,
   DecisionQuestion,
@@ -110,9 +111,10 @@ export type {
   DecisionRequestFor,
   DecisionRequestInput,
   DecisionResponseFor,
-  DecisionRoute,
+  DecisionModelRoute,
 } from "./decision.js"
 export { Decision } from "./decision.js"
+export { DecisionRoute } from "./route/decision.js"
 export { Media } from "./media.js"
 export { Generation } from "./generation.js"
 export type {

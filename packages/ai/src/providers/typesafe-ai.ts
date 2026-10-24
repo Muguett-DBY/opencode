@@ -12,15 +12,16 @@ export type Options = ProviderAuthOption<"optional"> & {
 }
 
 export const configure = (input: Options = {}) => {
-  const decision = (modelID: string | ModelID) =>
-    SystemOne.model({
-      id: modelID,
-      provider: id,
-      auth: AuthOptions.bearer(input, "TYPESAFE_API_KEY"),
-      baseURL: input.baseURL ?? baseURL,
-      headers: input.headers,
-      http: HttpOptions.make(input.http),
-    })
+  const route = SystemOne.route.with({
+    provider: id,
+    providerMetadataKey: "typesafe",
+    endpoint: { baseURL: input.baseURL ?? baseURL },
+    auth: AuthOptions.bearer(input, "TYPESAFE_API_KEY"),
+    // Required for images; text-only requests are unchanged with it.
+    headers: { "TypeSafe-Danger-Zone-Images": "true", ...input.headers },
+    http: input.http,
+  })
+  const decision = (modelID: string | ModelID) => route.model({ id: modelID })
   return { id, decision, configure }
 }
 

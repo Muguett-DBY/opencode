@@ -1,5 +1,11 @@
 import { Effect } from "effect"
-import { Decision, DecisionClient, DecisionModel, type DecisionRequestInput, type DecisionRoute } from "../src/index.js"
+import {
+  Decision,
+  DecisionClient,
+  DecisionModel,
+  type DecisionRequestInput,
+  type DecisionModelRoute,
+} from "../src/index.js"
 import type { Service } from "../src/decision-client.js"
 import { Baseten, OpenAI, OpenCode, OpenRouter, TypeSafeAI } from "../src/providers.js"
 
@@ -49,7 +55,7 @@ Effect.gen(function* () {
   questions: [{ name: "ok", type: "predicate", instructions: "OK?" }],
 }) satisfies DecisionRequestInput
 
-declare const route: DecisionRoute<{ readonly temperature?: number }>
+declare const route: DecisionModelRoute<{ readonly temperature?: number }>
 const custom = DecisionModel.make({ id: "custom", provider: "custom", route })
 Decision.generate({
   model: custom,

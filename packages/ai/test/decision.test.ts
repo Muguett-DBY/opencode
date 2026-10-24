@@ -86,7 +86,7 @@ describe("Decision", () => {
 
       expect(response.answers).toEqual(expectedAnswers)
       expect(response.usage?.totalTokens).toBe(36)
-      expect(response.providerMetadata).toEqual({ "typesafe-ai": { model: "jev-1.14.0" } })
+      expect(response.providerMetadata).toEqual({ typesafe: { model: "jev-1.14.0" } })
     }).pipe(
       Effect.provide(
         client((input) =>

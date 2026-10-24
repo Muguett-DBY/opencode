@@ -16,13 +16,13 @@ import { withOpenAIOptions, type OpenAIProviderOptionsInput } from "./openai-opt
 import { OpenAIImages } from "../protocols/openai-images.js"
 import { OpenAISpeech } from "../protocols/openai-speech.js"
 import { OpenAITranscription } from "../protocols/openai-transcription.js"
-import { OpenAIDecisions } from "../protocols/openai-decisions.js"
+import { OpenAIDecisions, type OptionsInput as OpenAIDecisionOptionsInput } from "../protocols/openai-decisions.js"
 
 export type { OpenAIOptionsInput, OpenAIResponseIncludable } from "./openai-options.js"
 export type { OpenAIImageOptions } from "../protocols/openai-images.js"
 export type { OpenAISpeechOptions } from "../protocols/openai-speech.js"
 export type { OpenAITranscriptionOptions } from "../protocols/openai-transcription.js"
-export type { OpenAIDecisionOptions } from "../protocols/openai-decisions.js"
+export type { OptionsInput as OpenAIDecisionOptions } from "../protocols/openai-decisions.js"
 
 export const id = ProviderID.make("openai")
 
@@ -118,7 +118,13 @@ export const configure = (input: Config = {}) => {
   const image = (modelID: string | ModelID) => OpenAIImages.model({ ...media, id: modelID })
   const speech = (modelID: string | ModelID) => OpenAISpeech.model({ ...media, id: modelID })
   const transcription = (modelID: string | ModelID) => OpenAITranscription.model({ ...media, id: modelID })
-  const decision = (modelID: string | ModelID) => OpenAIDecisions.model({ ...media, id: modelID })
+  const decisionRoute = OpenAIDecisions.route.with({
+    endpoint: { baseURL: media.baseURL },
+    auth: media.auth,
+    headers: media.headers,
+    http: media.http,
+  })
+  const decision = (modelID: string | ModelID) => decisionRoute.model<OpenAIDecisionOptionsInput>({ id: modelID })
 
   return {
     id,

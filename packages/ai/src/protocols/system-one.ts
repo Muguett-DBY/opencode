@@ -1,31 +1,24 @@
 import { Effect, Schema } from "effect"
-import type { HttpClientResponse } from "effect/http"
 import {
-  DecisionModel,
   DecisionResponse,
   type DecisionAnswer,
-  type DecisionOptions,
+  type DecisionModelCompatibility,
   type DecisionPart,
   type DecisionQuestion,
   type DecisionRequestFor,
 } from "../decision.js"
 import type { Media } from "../media.js"
+import { DecisionRoute } from "../route/decision.js"
 import { Endpoint } from "../route/endpoint.js"
 import { MediaProtocol } from "../route/media-protocol.js"
-import { MediaRoute } from "../route/media.js"
-import { ProviderID, Usage, mergeJsonRecords, type AIError } from "../schema/index.js"
+import { AIError, UnsupportedOperationError, Usage, mergeJsonRecords } from "../schema/index.js"
 import { JsonObject, ProviderShared } from "./shared.js"
 
 export const DEFAULT_PATH = "/systemone"
 
-/**
- * Where a host reads images, from models.dev `[api.systemone] compatibility.image_input`:
- * - `assets`: TypeSafe's `assets` map, referenced from the state, with its opt-in header (always sent: it changes
- *   nothing for requests without images, checked live);
- * - `images`: top-level `images` (plus `audio` and `videos`) lists in input order;
- * - `state`: `image_url` (plus `input_audio` and `video_url`) items in place inside a `state` list.
- */
-export type ImageInput = "assets" | "images" | "state"
+export const DEFAULT_BASE_URL = "https://api.typesafe.ai/v1"
+
+type ImageInput = NonNullable<DecisionModelCompatibility["imageInput"]>
 
 const Probability = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
 const Answer = Schema.Union([
@@ -60,15 +53,16 @@ export const Response = Schema.Struct({
 })
 export type Response = Schema.Schema.Type<typeof Response>
 
-const route = MediaProtocol.identity({ id: "system-one", name: "System One", provider: "system-one" })
+const ID = "system-one"
+const NAME = "System One"
 
-/** The System One body without `model`. */
+/** The System One body without `model`; media goes where the model's `imageInput` says, else `fallback`. */
 export const encodeBody = Effect.fn("SystemOne.encodeBody")(function* (
   request: DecisionRequestFor,
-  imageInput: ImageInput,
+  fallback: ImageInput,
 ) {
   const questions = yield* encodeQuestions(request.questions)
-  const placed = yield* placeMedia(request.input, imageInput)
+  const placed = yield* placeMedia(request, request.model.compatibility?.imageInput ?? fallback)
   return { ...mergeJsonRecords(request.providerOptions, request.http?.body), ...placed, questions }
 })
 
@@ -107,15 +101,25 @@ const encodeQuestions = (questions: ReadonlyArray<DecisionQuestion>) =>
     ] as const)
   }).pipe(Effect.map(Object.fromEntries))
 
-const placeMedia = Effect.fnUntraced(function* (parts: ReadonlyArray<DecisionPart>, imageInput: ImageInput) {
+const placeMedia = Effect.fnUntraced(function* (request: DecisionRequestFor, imageInput: ImageInput) {
+  const parts = request.input
+  const unsupported = (asset: Media.Asset, accepted: string) =>
+    new AIError({
+      reason: new UnsupportedOperationError({
+        operation: "decision.media",
+        provider: request.model.provider,
+        route: request.model.route.id,
+        message: `${NAME} takes ${accepted} here; got ${asset.mediaType}`,
+      }),
+    })
   const media = parts.flatMap((part) => (part.type === "media" ? [part.media] : []))
   if (media.length === 0) return { state: state(parts.map(plain)) }
-  if (imageInput === "state") return { state: yield* Effect.forEach(parts, stateItem) }
+  if (imageInput === "state") return { state: yield* Effect.forEach(parts, (part) => stateItem(part, unsupported)) }
   if (imageInput === "images") {
     const lists = { image: "images", audio: "audio", video: "videos" } as const
     const unplaced = media.find((asset) => !Object.hasOwn(lists, asset.kind))
     if (unplaced !== undefined) return yield* unsupported(unplaced, "images, audio and video")
-    const inline = yield* Effect.forEach(media, (asset) => ProviderShared.requireInlineMedia(route.name, asset))
+    const inline = yield* Effect.forEach(media, (asset) => ProviderShared.requireInlineMedia(NAME, asset))
     const fields = Object.fromEntries(
       Object.entries(lists).flatMap(([kind, field]) => {
         const items = inline.filter((_, index) => media[index].kind === kind).map((item) => item.dataUrl)
@@ -126,7 +130,7 @@ const placeMedia = Effect.fnUntraced(function* (parts: ReadonlyArray<DecisionPar
   }
   const unplaced = media.find((asset) => asset.kind !== "image")
   if (unplaced !== undefined) return yield* unsupported(unplaced, "images")
-  const inline = yield* Effect.forEach(media, (asset) => ProviderShared.requireInlineMedia(route.name, asset))
+  const inline = yield* Effect.forEach(media, (asset) => ProviderShared.requireInlineMedia(NAME, asset))
   // Every occurrence of a reference string in the body is replaced with its image, so it must not be ordinary text.
   const reference = (index: number) => `<image-${index + 1}>`
   const items = parts.reduce<{ readonly next: number; readonly values: ReadonlyArray<unknown> }>(
@@ -156,12 +160,15 @@ const plain = (part: DecisionPart) => {
   return undefined
 }
 
-const stateItem = (part: DecisionPart): Effect.Effect<unknown, AIError> => {
+const stateItem = (
+  part: DecisionPart,
+  unsupported: (asset: Media.Asset, accepted: string) => AIError,
+): Effect.Effect<unknown, AIError> => {
   if (part.type !== "media") return Effect.succeed(plain(part))
   const asset = part.media
   if (asset.kind !== "image" && asset.kind !== "audio" && asset.kind !== "video")
-    return unsupported(asset, "images, audio and video")
-  return ProviderShared.requireInlineMedia(route.name, asset).pipe(
+    return Effect.fail(unsupported(asset, "images, audio and video"))
+  return ProviderShared.requireInlineMedia(NAME, asset).pipe(
     Effect.map((inline) => {
       if (asset.kind === "image") return { type: "image_url", image_url: { url: inline.dataUrl } }
       if (asset.kind === "video") return { type: "video_url", video_url: { url: inline.dataUrl } }
@@ -170,14 +177,11 @@ const stateItem = (part: DecisionPart): Effect.Effect<unknown, AIError> => {
   )
 }
 
-const unsupported = (asset: Media.Asset, accepted: string) =>
-  Effect.fail(route.unsupported("decision.media", `${route.name} takes ${accepted} here; got ${asset.mediaType}`))
-
 /** Map System One's answers, keyed by question name, back to the request's question order. */
 export const toResponse = (
   data: Response,
   request: DecisionRequestFor,
-  provider: ProviderID,
+  providerMetadataKey: string,
   invalid: (message: string) => AIError,
 ) => {
   const names = request.questions.map((question) => question.name)
@@ -193,14 +197,14 @@ export const toResponse = (
               inputTokens: data.usage.input_tokens,
               outputTokens: data.usage.output_tokens,
               totalTokens: ProviderShared.totalTokens(data.usage.input_tokens, data.usage.output_tokens, undefined),
-              providerMetadata: { [provider]: data.usage },
+              providerMetadata: { [providerMetadataKey]: data.usage },
             }),
       providerMetadata: {
-        [provider]: {
+        [providerMetadataKey]: {
           model: data.model,
           ...(data.id === undefined ? {} : { responseId: data.id }),
           ...(data.provider === undefined ? {} : { provider: data.provider }),
-          ...data.provider_metadata?.[provider],
+          ...data.provider_metadata?.[providerMetadataKey],
         },
       },
     }),
@@ -238,46 +242,31 @@ const toAnswer = (question: DecisionQuestion, answer: typeof Answer.Type): Decis
   }
 }
 
-export interface ModelInput extends MediaRoute.ModelInput {
-  readonly provider: string
-  /** Request path after `baseURL`; defaults to `/systemone`. */
-  readonly path?: string
-  /** Defaults to `assets`, models.dev's default. */
-  readonly imageInput?: ImageInput
-}
+const decodeDocument = MediaProtocol.identity({ id: ID, name: NAME, provider: "typesafe-ai" }).decodeJson(Response)
 
-export const model = <Options extends DecisionOptions = DecisionOptions>(input: ModelInput) => {
-  const provider = ProviderID.make(input.provider)
-  const imageInput = input.imageInput ?? "assets"
-  const identity = MediaProtocol.identity({ id: route.id, name: route.name, provider })
-  const decode = identity.decodeJson(Response)
-  const composed = MediaRoute.inline({
-    protocol: MediaProtocol.inline<DecisionRequestFor<Options>, DecisionResponse>(identity, {
-      body: {
-        from: (request) =>
-          encodeBody(request, imageInput).pipe(
-            Effect.map((body) => MediaProtocol.json({ ...body, model: request.model.id })),
-          ),
-      },
-      response: {
-        decode: (response: HttpClientResponse.HttpClientResponse, context) =>
-          decode(response).pipe(
-            Effect.flatMap((output) => toResponse(output.value, context.request, provider, output.invalid)),
-          ),
-      },
-    }),
-    endpoint: Endpoint.path<MediaProtocol.Body, DecisionRequestFor<Options>>(input.path ?? DEFAULT_PATH, {
-      baseURL: input.baseURL,
-    }),
-    auth: input.auth,
-    headers: imageInput === "assets" ? { "TypeSafe-Danger-Zone-Images": "true", ...input.headers } : input.headers,
-  })
-  return DecisionModel.make<Options>({
-    id: input.id,
-    provider,
-    http: input.http,
-    route: { id: composed.id, inlineMedia: true, generate: composed.generate },
-  })
-}
+export const protocol = DecisionRoute.protocol({
+  id: ID,
+  name: NAME,
+  inlineMedia: true,
+  body: {
+    from: (request) => encodeBody(request, "assets").pipe(Effect.map((body) => ({ ...body, model: request.model.id }))),
+  },
+  response: {
+    decode: (response, context) =>
+      decodeDocument(response).pipe(
+        Effect.flatMap((output) =>
+          toResponse(output.value, context.request, context.providerMetadataKey, output.invalid),
+        ),
+      ),
+  },
+})
 
-export const SystemOne = { Response, encodeBody, toResponse, model } as const
+/** TypeSafe's API, the reference System One host; other hosts change the endpoint and auth with `route.with(...)`. */
+export const route = DecisionRoute.make({
+  id: ID,
+  provider: "typesafe-ai",
+  protocol,
+  endpoint: Endpoint.path("/systemone", { baseURL: DEFAULT_BASE_URL }),
+})
+
+export const SystemOne = { Response, encodeBody, toResponse, protocol, route } as const

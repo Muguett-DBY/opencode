@@ -3,7 +3,7 @@ import { Route, type RouteDefaultsInput } from "../route/client.js"
 import { Endpoint } from "../route/endpoint.js"
 import { Protocol } from "../route/protocol.js"
 import { AuthOptions, type ProviderAuthOption } from "../route/auth-options.js"
-import { HttpOptions, ProviderID, type ModelID, type OpenString } from "../schema/index.js"
+import { ProviderID, type ModelID, type OpenString } from "../schema/index.js"
 import type { ProviderPackage } from "../provider-package.js"
 import { SystemOne } from "../protocols/system-one.js"
 import { OpenAIChat } from "../protocols/openai-chat.js"
@@ -194,16 +194,16 @@ const configuredRoute = (input: LanguageModelOptions) => {
 
 export const configure = (input: LanguageModelOptions = {}) => {
   const route = configuredRoute(input)
+  const decisionRoute = SystemOne.route.with({
+    provider: id,
+    providerMetadataKey: "openrouter",
+    endpoint: { baseURL: input.baseURL ?? baseURL },
+    auth: AuthOptions.bearer(input, "OPENROUTER_API_KEY"),
+    headers: input.headers,
+    http: input.http,
+  })
   const decision = (modelID: string | ModelID) =>
-    SystemOne.model<OpenRouterDecisionOptions>({
-      id: modelID,
-      provider: id,
-      imageInput: "state",
-      auth: AuthOptions.bearer(input, "OPENROUTER_API_KEY"),
-      baseURL: input.baseURL ?? baseURL,
-      headers: input.headers,
-      http: HttpOptions.make(input.http),
-    })
+    decisionRoute.model<OpenRouterDecisionOptions>({ id: modelID, compatibility: { imageInput: "state" } })
   return {
     id,
     model: (modelID: string | ModelID) =>

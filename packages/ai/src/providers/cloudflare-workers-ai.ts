@@ -6,7 +6,7 @@ import { AuthOptions, type AtLeastOne, type ProviderAuthOption } from "../route/
 import { Route, type RouteDefaultsInput } from "../route/client.js"
 import { Endpoint } from "../route/endpoint.js"
 import { MediaRoute } from "../route/media.js"
-import { HttpOptions, ProviderConfigurationError, ProviderID, type ModelID } from "../schema/index.js"
+import { ProviderConfigurationError, ProviderID, type ModelID } from "../schema/index.js"
 import type { OpenAIProviderOptionsInput } from "./openai-options.js"
 
 export const id = ProviderID.make("cloudflare-workers-ai")
@@ -67,15 +67,17 @@ export const configure = (input: LanguageModelOptions) => {
   const { accountId: _accountId, apiKey: _apiKey, auth: _auth, baseURL: _baseURL, ...defaults } = input
   const auth = AuthOptions.bearer(input, authEnvVars)
   const configured = route.with({ ...defaults, endpoint: { baseURL: baseURL(input) }, auth })
+  // The Run API base is derived per call so a chat-only configuration without an account still constructs.
   const decision = (modelID: string | ModelID) =>
-    CloudflareRunDecisions.model({
-      id: modelID,
-      provider: id,
-      auth,
-      baseURL: runBaseURL(input),
-      headers: input.headers,
-      http: HttpOptions.make(input.http),
-    })
+    CloudflareRunDecisions.route
+      .with({
+        provider: id,
+        endpoint: { baseURL: runBaseURL(input) },
+        auth: auth,
+        headers: input.headers,
+        http: input.http,
+      })
+      .model({ id: modelID })
   return {
     id,
     model: (modelID: string | ModelID) => configured.model<OpenAIProviderOptionsInput>({ id: modelID }),

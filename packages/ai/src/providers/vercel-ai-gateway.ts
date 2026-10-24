@@ -231,7 +231,14 @@ export const configure = (input: Options = {}) => {
   }
   const media = MediaRoute.deployment({ ...input, baseURL: configured.endpoint.baseURL }, configured.auth)
   const image = (modelID: string | ModelID) => OpenAIImages.model({ ...media, id: modelID, provider: id })
-  const decision = (modelID: string | ModelID) => OpenAIDecisions.model({ ...media, id: modelID, provider: id })
+  const decisionRoute = OpenAIDecisions.route.with({
+    provider: id,
+    endpoint: { baseURL: configured.endpoint.baseURL },
+    auth: configured.auth,
+    headers: input.headers,
+    http: input.http,
+  })
+  const decision = (modelID: string | ModelID) => decisionRoute.model({ id: modelID })
   return { id, model, messages, responses, chat, image, decision, configure }
 }
 

@@ -6,7 +6,7 @@ import { AuthOptions, type ProviderAuthOption } from "../route/auth-options.js"
 import { Route, type RouteDefaultsInput } from "../route/client.js"
 import { Endpoint } from "../route/endpoint.js"
 import { Protocol } from "../route/protocol.js"
-import { HttpOptions, ProviderID, type ModelID } from "../schema/index.js"
+import { ProviderID, type ModelID } from "../schema/index.js"
 import type { OpenAIProviderOptionsInput } from "./openai-options.js"
 
 export const id = ProviderID.make("digitalocean")
@@ -48,15 +48,15 @@ export const configure = (input: LanguageModelOptions = {}) => {
     endpoint: { baseURL: endpoint ?? baseURL },
     auth,
   })
-  const decision = (modelID: string | ModelID) =>
-    SystemOne.model({
-      id: modelID,
-      provider: id,
-      auth,
-      baseURL: endpoint ?? baseURL,
-      headers: input.headers,
-      http: HttpOptions.make(input.http),
-    })
+  const decisionRoute = SystemOne.route.with({
+    provider: id,
+    providerMetadataKey: "digitalocean",
+    endpoint: { baseURL: endpoint ?? baseURL },
+    auth,
+    headers: input.headers,
+    http: input.http,
+  })
+  const decision = (modelID: string | ModelID) => decisionRoute.model({ id: modelID })
   return {
     id,
     model: (modelID: string | ModelID) =>

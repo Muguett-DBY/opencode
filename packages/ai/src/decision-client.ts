@@ -2,13 +2,11 @@ import { Context, Effect, Layer } from "effect"
 import type {
   DecisionAnswer,
   DecisionOptions,
-  DecisionPart,
   DecisionQuestion,
   DecisionQuestions,
   DecisionRequestFor,
   DecisionResponseFor,
 } from "./decision.js"
-import { RequestExecutorService } from "./route/executor-service.js"
 import { RequestExecutor } from "./route/executor.js"
 import { AIError, InvalidProviderOutputError } from "./schema/index.js"
 
@@ -34,10 +32,7 @@ export const layer: Layer.Layer<Service, never, RequestExecutor.Service> = Layer
     return Service.of({
       generate: Effect.fnUntraced(function* (request) {
         const route = request.model.route
-        const input = route.inlineMedia
-          ? yield* Effect.forEach(request.input, (part) => materialize(part, executor.execute))
-          : request.input
-        const response = yield* route.generate({ ...request, input }, executor.execute)
+        const response = yield* route.generate(request, executor.execute)
         if (answersMatch(request.questions, response.answers))
           return response as DecisionResponseFor<typeof request.questions>
         return yield* new AIError({
@@ -52,14 +47,6 @@ export const layer: Layer.Layer<Service, never, RequestExecutor.Service> = Layer
   }),
 )
 export const fetchLayer = layer.pipe(Layer.provideMerge(RequestExecutor.fetchLayer))
-
-const materialize = (part: DecisionPart, execute: Execute) =>
-  part.type === "media" && part.media.source.type === "url"
-    ? part.media.materialize().pipe(
-        Effect.provideService(RequestExecutorService, { execute }),
-        Effect.map((media) => ({ ...part, media })),
-      )
-    : Effect.succeed(part)
 
 /** Host bugs (a missing or extra answer, an option that wasn't offered, a score off the scale) fail the whole call. */
 const answersMatch = (questions: ReadonlyArray<DecisionQuestion>, answers: ReadonlyArray<DecisionAnswer>) =>
