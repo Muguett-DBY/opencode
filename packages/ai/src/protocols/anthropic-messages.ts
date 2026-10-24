@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer"
 import { Effect, Option, Schema, SchemaGetter } from "effect"
 import { Tool } from "@opencode/schema/tool"
-import { Media } from "../media.js"
 import { Route } from "../route/client.js"
 import { Auth } from "../route/auth.js"
 import { Endpoint } from "../route/endpoint.js"
@@ -14,7 +13,6 @@ import {
   HttpOptions,
   LLMRequest,
   LLMEvent,
-  Message,
   mergeJsonRecords,
   Usage,
   type CacheHint,
@@ -694,7 +692,7 @@ const lowerMedia = Effect.fnUntraced(function* (part: MediaPart, request: LLMReq
     const reference = yield* ProviderShared.mediaReference(part.media, request.model.provider, "Messages video")
     const source = inline
       ? { type: "base64" as const, media_type: mime, data: inline.base64 }
-      : reference.type === "ref" && !/^[a-z][a-z\d+.-]*:\/\//i.test(reference.value)
+      : reference.type === "ref" && !reference.value.includes("://")
         ? { type: "file" as const, file_id: reference.value }
         : { type: "url" as const, url: reference.value }
     return {
@@ -813,11 +811,7 @@ const lowerMedia = Effect.fnUntraced(function* (part: MediaPart, request: LLMReq
 // content instead of JSON-stringifying base64 into a prompt string.
 const lowerToolResultContentItem = Effect.fnUntraced(function* (item: Tool.Content, request: LLMRequest) {
   if (item.type === "text") return { type: "text" as const, text: item.text } satisfies AnthropicTextBlock
-  const part =
-    item.mime.toLowerCase().startsWith("video/") && /^(ms|mm_file):\/\//.test(item.uri)
-      ? Message.media(Media.url(item.uri, { mediaType: item.mime }), { filename: item.name })
-      : ProviderShared.toolFileMedia(item)
-  return yield* lowerMedia(part, request)
+  return yield* lowerMedia(ProviderShared.toolFileMedia(item), request)
 })
 
 const lowerToolResultContent = Effect.fnUntraced(function* (
@@ -831,12 +825,7 @@ const lowerToolResultContent = Effect.fnUntraced(function* (
   // Preserve the narrowed array element type when compiled through a consumer package.
   const content: ReadonlyArray<Tool.Content> = part.result.value
   const blocks = yield* Effect.forEach(content, (item) => lowerToolResultContentItem(item, request))
-  if (
-    ![request.model.provider, request.model.route.provider, request.model.route.providerMetadataKey].includes("meta") &&
-    URL.parse(request.model.route.endpoint.baseURL ?? "")?.hostname !== "api.meta.ai"
-  )
-    return blocks
-  // Meta accepts nested video but does not show it to the model.
+  if (request.model.compatibility?.messages?.toolVideo !== "user") return blocks
   return blocks.filter((block) => {
     if (block.type !== "video") return true
     videos.push(block)

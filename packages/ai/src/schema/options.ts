@@ -236,6 +236,12 @@ export class LanguageModelCompatibility extends Schema.Class<LanguageModelCompat
   supportsThinkingBlockBinding: Schema.optional(Schema.Boolean),
   /** Supports per-message effort updates. Overrides model-ID detection. */
   supportsEffortUpdates: Schema.optional(Schema.Boolean),
+  messages: Schema.optional(
+    Schema.Struct({
+      /** Tool-result video placement; omitted keeps videos nested. */
+      toolVideo: Schema.optional(Schema.Literals(["nested", "user"])),
+    }),
+  ),
 }) {}
 
 export namespace LanguageModelCompatibility {

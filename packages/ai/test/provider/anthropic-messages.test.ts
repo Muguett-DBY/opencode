@@ -6,6 +6,7 @@ import {
   LLM,
   AIError,
   LLMRequest,
+  LanguageModel,
   Message,
   ToolCallPart,
   ToolDefinition,
@@ -14,8 +15,8 @@ import {
 } from "../../src/index.js"
 import { Auth, Endpoint, LLMClient, Route } from "../../src/route.js"
 import { compileRequest } from "../../src/route/client.js"
-import * as AnthropicMessages from "../../src/protocols/anthropic-messages.js"
-import { GoogleVertexMessages, MiniMax } from "../../src/providers.js"
+import { AnthropicMessages } from "../../src/protocols/anthropic-messages.js"
+import { GoogleVertexMessages, Meta } from "../../src/providers.js"
 import { continuationRequest, nativeAnthropicMessagesContinuation } from "../continuation-scenarios.js"
 import { it } from "../lib/effect.js"
 import { dynamicResponse, fixedResponse } from "../lib/http.js"
@@ -860,7 +861,7 @@ describe("Anthropic Messages route", () => {
     }),
   )
 
-  it.effect("serializes Messages video by default and keeps Meta video after parallel tool results", () =>
+  it.effect("serializes Messages video by default and honors tool placement compatibility", () =>
     Effect.gen(function* () {
       const video = { type: "video", source: { type: "base64", media_type: "video/mp4", data: "AAECAw==" } }
       const attachment = { type: "file" as const, uri: "data:video/mp4;base64,AAECAw==", mime: "video/mp4" }
@@ -887,28 +888,36 @@ describe("Anthropic Messages route", () => {
         LLMRequest.update(user, {
           messages: [
             Message.assistant([ToolCallPart.make({ id: "clip", name: "read", input: {} })]),
-            Message.tool({ id: "clip", name: "read", resultType: "content", result: [attachment] }),
+            Message.tool({
+              id: "clip",
+              name: "read",
+              resultType: "content",
+              result: [attachment, { type: "file", uri: "storage://clip", mime: "video/mp4" }],
+            }),
           ],
         }),
       )
-      expect(expectToolResult(nested.body).content).toEqual([video])
+      expect(expectToolResult(nested.body).content).toEqual([
+        video,
+        { type: "video", source: { type: "url", url: "storage://clip" } },
+      ])
 
-      const metaEndpoint = yield* compileRequest(
-        LLM.request({
-          model: MiniMax.configure({ apiKey: "test", baseURL: "https://api.meta.ai/v1" }).messages("video-model"),
-          messages: [
-            Message.assistant([
-              ToolCallPart.make({ id: "first", name: "read", input: {} }),
-              ToolCallPart.make({ id: "second", name: "read", input: {} }),
-            ]),
-            Message.tool({ id: "first", name: "read", resultType: "content", result: [attachment] }),
-            Message.tool({ id: "second", name: "read", resultType: "content", result: [attachment] }),
-            Message.assistant("Observed."),
-          ],
-          cache: "none",
-        }),
-      )
-      expect(metaEndpoint.body.messages).toMatchObject([
+      const meta = LLM.request({
+        model: Meta.configure({ apiKey: "test" }).messages("video-model"),
+        messages: [
+          Message.assistant([
+            ToolCallPart.make({ id: "first", name: "read", input: {} }),
+            ToolCallPart.make({ id: "second", name: "read", input: {} }),
+          ]),
+          Message.tool({ id: "first", name: "read", resultType: "content", result: [attachment] }),
+          Message.tool({ id: "second", name: "read", resultType: "content", result: [attachment] }),
+          Message.assistant("Observed."),
+        ],
+        cache: "none",
+      })
+      expect(meta.model.compatibility?.messages?.toolVideo).toBe("user")
+      const hoisted = yield* compileRequest(meta)
+      expect(hoisted.body.messages).toMatchObject([
         {
           role: "assistant",
           content: [
@@ -927,6 +936,28 @@ describe("Anthropic Messages route", () => {
         },
         { role: "assistant", content: [{ type: "text", text: "Observed." }] },
       ])
+
+      const generic = yield* compileRequest(
+        LLMRequest.update(meta, {
+          model: LanguageModel.update(user.model, { compatibility: { messages: { toolVideo: "user" } } }),
+        }),
+      )
+      expect(generic.body.messages).toEqual(hoisted.body.messages)
+
+      const overridden = yield* compileRequest(
+        LLMRequest.update(meta, {
+          model: LanguageModel.update(meta.model, {
+            compatibility: { ...meta.model.compatibility, messages: { toolVideo: "nested" } },
+          }),
+        }),
+      )
+      expect(overridden.body.messages[1]?.content).toEqual([
+        { type: "tool_result", tool_use_id: "first", content: [video] },
+        { type: "tool_result", tool_use_id: "second", content: [video] },
+      ])
+
+      const foreign = yield* compileRequest(LLMRequest.update(user, { model })).pipe(Effect.flip)
+      expect(foreign.message).toContain("got custom:file_clip")
 
       const native = yield* compileRequest(
         LLM.request({
