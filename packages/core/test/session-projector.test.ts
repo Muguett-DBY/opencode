@@ -42,7 +42,8 @@ import { Database as SqliteDatabase } from "bun:sqlite"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { migrateMediaBlobs } from "../script/migrate-media-blobs"
+import { MigrationMissingError, migrateMediaBlobs } from "../script/migrate-media-blobs"
+import mediaBlobMigration from "../src/database/migration/20261024204744_media_blob"
 import { testEffect } from "./lib/effect"
 import { Snapshot } from "@opencode/core/snapshot"
 
@@ -1636,7 +1637,7 @@ describe("SessionProjector", () => {
     }),
   )
 
-  it.effect("backfills legacy inline rows idempotently, populates media_ref, batches safely, and fails fast when locked", () =>
+  it.effect("backfills legacy inline rows byte-for-byte and idempotently, refuses before the migration, and fails fast when locked", () =>
     Effect.gen(function* () {
       const tmpDir = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-media-backfill-")))
       const dbPath = path.join(tmpDir, "test.db")
@@ -1672,7 +1673,8 @@ describe("SessionProjector", () => {
         const pixels = new Uint8Array(2200 * 1100 * 4)
         pixels.fill(180)
         const img = new photon.PhotonImage(pixels, 2200, 1100)
-        const oversizedBase64 = Buffer.from(img.get_bytes()).toString("base64")
+        const oversized = Buffer.from(img.get_bytes())
+        const oversizedBase64 = oversized.toString("base64")
         img.free()
 
         const raw = Buffer.from("legacy-inline-attachment-bytes")
@@ -1714,6 +1716,27 @@ describe("SessionProjector", () => {
           .query(`INSERT INTO session_inbox VALUES (?, 'ses_1', 'user', ?, 'steer', 3, 0)`)
           .run("inb_1", JSON.stringify(userRow))
 
+        const tables = () =>
+          sqlite
+            .query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
+            .all()
+            .map((row) => row.name)
+        const before = tables()
+        const refused = yield* Effect.promise(() =>
+          migrateMediaBlobs(sqlite).then(
+            () => undefined,
+            (err: unknown) => err,
+          ),
+        )
+        expect(refused).toBeInstanceOf(MigrationMissingError)
+        expect(String(refused)).toContain("20261024204744_media_blob")
+        expect(tables()).toEqual(before)
+
+        // Apply the real migration and journal it the way startup does.
+        yield* mediaBlobMigration.up({ run: (query: string) => Effect.sync(() => sqlite.exec(query)) } as any) as Effect.Effect<void>
+        sqlite.exec(`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
+        sqlite.query(`INSERT INTO migration VALUES (?, 0)`).run(mediaBlobMigration.id)
+
         const first = yield* Effect.promise(() =>
           migrateMediaBlobs(sqlite, { now: 123, maxBatchRows: 1 }),
         )
@@ -1722,14 +1745,24 @@ describe("SessionProjector", () => {
         expect(first.refsRecorded).toBe(5)
 
         const storedBlobs = sqlite
-          .query<{ hash: string; mime: string; bytes: number; width: number | null; height: number | null }, []>(
-            `SELECT hash, mime, bytes, width, height FROM media_blob`,
-          )
+          .query<
+            { hash: string; mime: string; bytes: number; width: number | null; height: number | null; data: Uint8Array },
+            []
+          >(`SELECT hash, mime, bytes, width, height, data FROM media_blob`)
           .all()
         expect(storedBlobs).toHaveLength(2)
-        const imageBlob = storedBlobs.find((b) => b.width !== null)
-        expect(imageBlob?.width).toBe(2000)
-        expect(imageBlob?.height).toBe(1000)
+        // Byte-preserving: blobs hold exactly the bytes that were inline, never resized or re-encoded.
+        const byHash = new Map(storedBlobs.map((blob) => [blob.hash, blob]))
+        for (const [original, mime] of [
+          [raw, "application/pdf"],
+          [oversized, "image/png"],
+        ] as const) {
+          const blob = byHash.get(SessionMediaBlob.hashBytes(original))
+          expect(blob?.mime).toBe(mime)
+          expect(blob?.bytes).toBe(original.byteLength)
+          expect(Buffer.from(blob!.data).equals(original)).toBe(true)
+        }
+        expect(byHash.get(SessionMediaBlob.hashBytes(oversized))).toMatchObject({ width: 2200, height: 1100 })
 
         const storedRefs = sqlite
           .query<{ session_id: string; message_id: string; hash: string; seq: number }, []>(
@@ -1759,7 +1792,7 @@ describe("SessionProjector", () => {
         expect(allRowsJson()).toContain(`media:${pdfHash}`)
         expect(allRowsJson()).not.toContain("/api/")
 
-        // Rows written by early builds with `/api/media/<hash>` refs are rewritten to `media:<hash>`.
+        // Recognized media URLs (early `/api/media/<hash>` refs, full endpoint URLs) are rewritten to `media:<hash>`.
         sqlite
           .query(`INSERT INTO session_message VALUES ('msg_legacy_ref', 'ses_1', 'user', 10, 0, 0, ?)`)
           .run(
@@ -1779,7 +1812,13 @@ describe("SessionProjector", () => {
                   ...assistantRowData.content[0],
                   state: {
                     ...assistantRowData.content[0]!.state,
-                    content: [{ type: "file", uri: `/api/media/${pdfHash}`, mime: "application/pdf" }],
+                    content: [
+                      {
+                        type: "file",
+                        uri: `http://127.0.0.1:4096/api/experimental/media/${pdfHash}`,
+                        mime: "application/pdf",
+                      },
+                    ],
                   },
                 },
               ],
