@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer"
 import { Effect, Option, Schema, SchemaGetter } from "effect"
 import { Tool } from "@opencode/schema/tool"
+import { MessagesCompatibility } from "../compatibility/anthropic-messages.js"
 import { Route } from "../route/client.js"
 import { Auth } from "../route/auth.js"
 import { Endpoint } from "../route/endpoint.js"
@@ -825,7 +826,7 @@ const lowerToolResultContent = Effect.fnUntraced(function* (
   // Preserve the narrowed array element type when compiled through a consumer package.
   const content: ReadonlyArray<Tool.Content> = part.result.value
   const blocks = yield* Effect.forEach(content, (item) => lowerToolResultContentItem(item, request))
-  if (request.model.compatibility?.messages?.toolVideo !== "user") return blocks
+  if (MessagesCompatibility.resolve(request.model.compatibility).toolVideo !== "user") return blocks
   return blocks.filter((block) => {
     if (block.type !== "video") return true
     videos.push(block)

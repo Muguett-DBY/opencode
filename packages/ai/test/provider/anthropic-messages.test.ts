@@ -915,7 +915,7 @@ describe("Anthropic Messages route", () => {
         ],
         cache: "none",
       })
-      expect(meta.model.compatibility?.messages?.toolVideo).toBe("user")
+      expect(meta.model.compatibility?.toolVideo).toBe("user")
       const hoisted = yield* compileRequest(meta)
       expect(hoisted.body.messages).toMatchObject([
         {
@@ -939,7 +939,7 @@ describe("Anthropic Messages route", () => {
 
       const generic = yield* compileRequest(
         LLMRequest.update(meta, {
-          model: LanguageModel.update(user.model, { compatibility: { messages: { toolVideo: "user" } } }),
+          model: LanguageModel.update(user.model, { compatibility: { toolVideo: "user" } }),
         }),
       )
       expect(generic.body.messages).toEqual(hoisted.body.messages)
@@ -947,7 +947,7 @@ describe("Anthropic Messages route", () => {
       const overridden = yield* compileRequest(
         LLMRequest.update(meta, {
           model: LanguageModel.update(meta.model, {
-            compatibility: { ...meta.model.compatibility, messages: { toolVideo: "nested" } },
+            compatibility: { ...meta.model.compatibility, toolVideo: "nested" },
           }),
         }),
       )

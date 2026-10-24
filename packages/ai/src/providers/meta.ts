@@ -138,7 +138,7 @@ export const configure = (input: LanguageModelOptions = {}) => {
   const messages = (modelID: string | ModelID) =>
     configuredMessages.model<MessagesOptionsInput>({
       id: modelID,
-      compatibility: { requireSignature: false, messages: { toolVideo: "user" } },
+      compatibility: { requireSignature: false, toolVideo: "user" },
     })
   const media = MediaRoute.deployment(input, options.auth)
   const image = (modelID: string | ModelID) => MetaImages.model({ ...media, id: modelID })
