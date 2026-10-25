@@ -1,0 +1,76 @@
+name: Location shutdown validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact candidate or baseline commit to check
+        required: true
+        default: a6d26243a4bd29479d4f4e7a922f86ce502922d3
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    name: client (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+      - name: Record tested commit
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.4'
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Client tests
+        working-directory: packages/client
+        run: bun test --timeout 5000 --reporter=junit --reporter-outfile client-suite.xml
+      - name: Randomized regression tests (10 runs)
+        working-directory: packages/client
+        run: bun test --timeout 5000 test/solid-data.test.ts --rerun-each 10 --randomize
+      - name: Client typechecks
+        working-directory: packages/client
+        run: |
+          bun run typecheck
+          bun run typecheck:tsc
+  check:
+    name: repository check (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+      - name: Record tested commit
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.4'
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Lint and typecheck repository
+        run: bun run check
