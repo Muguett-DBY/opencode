@@ -284,7 +284,7 @@ export function createData(config: CreateDataInput) {
   )
   const messageIndex = new Map<string, Map<string, number>>()
   const sync = createSync()
-  // Teardown publishes MCP events after shutdown; a later read reactivates the location.
+  // MCP teardown events must not reopen a shut-down location.
   const shutdowns = new Set<string>()
   let activeUpdates: Map<string, DataSessionStatus | undefined> | undefined
   const pendingUpdates = new Map<string, Map<string, SessionInboxInfo | SessionInbox.Delivery | undefined>>()
@@ -1264,6 +1264,26 @@ export function createData(config: CreateDataInput) {
 
     if (!event.location) return
     const location = event.location
+    // Catalog updates come from a live location. Its rebuilt MCP events may have arrived first.
+    switch (event.type) {
+      case "provider.updated":
+      case "model.updated":
+      case "agent.updated":
+      case "command.updated":
+      case "skill.updated":
+      case "reference.updated":
+      case "integration.updated":
+      case "config.updated":
+      case "websearch.updated": {
+        const key = locationKey(location)
+        if (!shutdowns.delete(key)) break
+        if (result.location.mcp.server.list(location) !== undefined || sync.has(`location.mcpServer:${key}`))
+          refresh(() => result.location.mcp.server.sync(location))
+        if (result.location.mcp.resource.list(location) !== undefined || sync.has(`location.mcpResource:${key}`))
+          refresh(() => result.location.mcp.resource.sync(location))
+        break
+      }
+    }
     switch (event.type) {
       case "location.shutdown": {
         const key = locationKey(location)
