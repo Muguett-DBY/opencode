@@ -1430,6 +1430,7 @@ export function createData(config: CreateDataInput) {
             return
           }
           const response = await load(locationQuery(location))
+          if (shutdowns.has(id)) return
           const key = locationKey(response.location)
           publish(key, response.data)
           if (options?.alias && key !== id) publish(id, response.data)

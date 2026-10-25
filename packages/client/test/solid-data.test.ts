@@ -1272,9 +1272,12 @@ test("discards queued MCP refreshes and ignores an old read finishing after shut
     setup.emit("location.shutdown")
     release.resolve()
     await load
+    expect(setup.data.location.mcp.resource.list()).toBeUndefined()
     for (const type of mcpEvents) setup.emit(type)
     await setup.flush()
     expect(setup.requests.toSorted()).toEqual(["/api/mcp/resource:/project", "/api/mcp:/project"])
+    await setup.data.location.mcp.resource.sync()
+    expect(setup.data.location.mcp.resource.list()).toEqual([])
   } finally {
     release.resolve()
     await load
