@@ -61,7 +61,7 @@ const adapter = {
 
 const fromRequest = Effect.fn("MetaResponses.fromRequest")(function* (request: LLMRequest) {
   const key = request.model.route.providerMetadataKey ?? String(request.model.provider)
-  return yield* OpenResponses.fromRequestWithAdapter(
+  const body = yield* OpenResponses.fromRequestWithAdapter(
     LLMRequest.update(request, {
       messages: request.messages.map((message) =>
         Message.make({
@@ -89,6 +89,37 @@ const fromRequest = Effect.fn("MetaResponses.fromRequest")(function* (request: L
     }),
     adapter,
   )
+  const input: typeof body.input = []
+  const videos: Extract<OpenResponses.MediaInput, { type: "input_video" }>[] = []
+  const isFunctionOutput = (
+    item: (typeof body.input)[number],
+  ): item is Extract<(typeof body.input)[number], { type: "function_call_output" }> =>
+    item.type === "function_call_output"
+  const flushVideos = () => {
+    if (videos.length === 0) return
+    input.push({ type: "message", role: "user", content: videos.splice(0) })
+  }
+  for (const item of body.input) {
+    if (!isFunctionOutput(item)) {
+      flushVideos()
+      input.push(item)
+      continue
+    }
+    if (typeof item.output === "string") {
+      input.push(item)
+      continue
+    }
+    const attachments = item.output.filter((part) => part.type === "input_video")
+    const content = item.output.filter((part) => part.type !== "input_video")
+    videos.push(...attachments)
+    input.push({
+      ...item,
+      output:
+        attachments.length > 0 && content.length === 0 ? "Video attached in the following user message." : content,
+    })
+  }
+  flushVideos()
+  return { ...body, input }
 })
 
 const HOSTED_TOOLS = {

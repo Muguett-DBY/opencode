@@ -88,11 +88,7 @@ const configuredChatRoute = (input: LanguageModelOptions) => {
 export const configure = (input: LanguageModelOptions = {}) => {
   const responsesRoute = configuredResponsesRoute(input)
   const chatRoute = configuredChatRoute(input)
-  const responses = (modelID: string | ModelID) =>
-    responsesRoute.model<XAIProviderOptionsInput>({
-      id: modelID,
-      compatibility: { videoInput: "input_file" },
-    })
+  const responses = (modelID: string | ModelID) => responsesRoute.model<XAIProviderOptionsInput>({ id: modelID })
   const chat = (modelID: string | ModelID) => chatRoute.model<XAIProviderOptionsInput>({ id: modelID })
   const media = MediaRoute.deployment(input, auth(input))
   return {

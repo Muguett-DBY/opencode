@@ -1872,10 +1872,10 @@ describe("OpenAI Responses route", () => {
         id: "call_video",
         name: "record",
         resultType: "content",
-        result: [{ type: "file", uri: "https://example.com/clip.mp4", mime: "video/mp4" }],
+        result: [{ type: "file", uri: "https://example.com/clip.mp4", mime: "video/mp4", name: "clip.mp4" }],
       })
       const messages = [
-        Message.user({ type: "media", media }),
+        Message.user({ type: "media", media, filename: "clip.mp4" }),
         Message.assistant([ToolCallPart.make({ id: "call_video", name: "record", input: {} })]),
         videoResult,
       ]
@@ -1883,13 +1883,13 @@ describe("OpenAI Responses route", () => {
         {
           type: "message",
           role: "user",
-          content: [{ type: "input_file", filename: "file", file_url: "https://example.com/clip.mp4" }],
+          content: [{ type: "input_file", filename: "clip.mp4", file_url: "https://example.com/clip.mp4" }],
         },
         { type: "function_call", call_id: "call_video", name: "record", arguments: "{}" },
         {
           type: "function_call_output",
           call_id: "call_video",
-          output: [{ type: "input_file", filename: "file", file_url: "https://example.com/clip.mp4" }],
+          output: [{ type: "input_file", filename: "clip.mp4", file_url: "https://example.com/clip.mp4" }],
         },
       ]
       const videoInput = [
@@ -1908,7 +1908,6 @@ describe("OpenAI Responses route", () => {
       const custom = OpenAICompatibleResponses.route
         .with({ provider: "custom", endpoint: { baseURL: "https://provider.example/v1" } })
         .model({ id: "video-model" })
-      expect(xaiModel.compatibility?.videoInput).toBe("input_file")
       for (const item of [
         {
           name: "unknown provider uses input_video for user and tool video",
@@ -1916,18 +1915,12 @@ describe("OpenAI Responses route", () => {
           input: videoInput,
         },
         { name: "xAI user and tool video", model: xaiModel, input: fileInput },
-        {
-          name: "xAI video encoding can be reset to input_video",
-          model: LanguageModel.update(xaiModel, { compatibility: { videoInput: "input_video" } }),
-          input: videoInput,
-        },
       ]) {
         const prepared = yield* compileRequest(LLM.request({ model: item.model, messages }))
         expect(prepared.body.input, item.name).toMatchObject(item.input)
       }
 
       const meta = Meta.configure({ apiKey: "test" }).responses("muse-spark-1.3")
-      expect(meta.compatibility?.toolVideo).toBe("user")
       const metaRequest = LLM.request({
         model: meta,
         messages: [
@@ -1964,18 +1957,8 @@ describe("OpenAI Responses route", () => {
         ...metaInput,
         { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
       ])
-      const genericHoist = yield* compileRequest(
-        LLMRequest.update(metaRequest, {
-          model: LanguageModel.update(custom, { compatibility: { toolVideo: "user" } }),
-        }),
-      )
-      expect(genericHoist.body.input, "tool placement is provider-independent").toMatchObject(metaInput)
-      const nested = yield* compileRequest(
-        LLMRequest.update(metaRequest, {
-          model: LanguageModel.update(meta, { compatibility: { toolVideo: "nested" } }),
-        }),
-      )
-      expect(nested.body.input, "Meta tool placement can be reset to nested").toMatchObject([
+      const nested = yield* compileRequest(LLMRequest.update(metaRequest, { model: custom }))
+      expect(nested.body.input, "the shared protocol keeps tool video nested").toMatchObject([
         { type: "function_call", call_id: "call_video", name: "record", arguments: "{}" },
         { type: "function_call", call_id: "call_text", name: "read", arguments: "{}" },
         {

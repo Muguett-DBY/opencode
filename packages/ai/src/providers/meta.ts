@@ -129,10 +129,7 @@ export const configure = (input: LanguageModelOptions = {}) => {
   const configuredChat = chatRoute.with(options)
   const configuredMessages = messagesRoute.with(options)
   const responses = (modelID: string | ModelID) =>
-    configuredResponses.model<OpenResponsesProviderOptionsInput>({
-      id: modelID,
-      compatibility: { toolVideo: "user" },
-    })
+    configuredResponses.model<OpenResponsesProviderOptionsInput>({ id: modelID })
   const chat = (modelID: string | ModelID) =>
     configuredChat.model<OpenResponsesProviderOptionsInput>({
       id: modelID,

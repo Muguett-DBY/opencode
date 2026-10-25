@@ -34,6 +34,17 @@ const XAIResponsesHostedToolItem = Schema.Union([
 const adapter = {
   id: ADAPTER,
   name: NAME,
+  lowerMedia: ({ part, media }) => {
+    if (part.media.kind !== "video") return undefined
+    const url = ProviderShared.mediaUrl(part.media)
+    const location = url ?? media?.dataUrl
+    if (location === undefined) return undefined
+    return {
+      type: "input_file",
+      filename: part.filename ?? "file",
+      ...(url ? { file_url: url } : { file_data: location }),
+    }
+  },
   restoreHostedToolItem: (item: unknown) => (Schema.is(XAIResponsesHostedToolItem)(item) ? item : undefined),
 } satisfies OpenResponses.ProviderAdapter
 

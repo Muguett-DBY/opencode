@@ -32,7 +32,6 @@ import { effortUpdate } from "../effort-updates.js"
 import { OpenResponsesOptions } from "./utils/open-responses-options.js"
 import { Lifecycle } from "./utils/lifecycle.js"
 import { ToolStream } from "./utils/tool-stream.js"
-import { ResponsesCompatibility } from "../compatibility/open-responses.js"
 
 const ADAPTER = "open-responses"
 const NAME = "Open Responses"
@@ -524,11 +523,7 @@ const lowerMedia = Effect.fnUntraced(function* (part: MediaPart, request: LLMReq
   const url = ProviderShared.mediaUrl(part.media)
   const location = url ?? (yield* ProviderShared.requireInlineMedia(adapter.name, part.media)).dataUrl
   if (part.media.kind !== "image") {
-    if (
-      part.media.kind === "video" &&
-      ResponsesCompatibility.resolve(request.model.compatibility).videoInput === "input_video"
-    )
-      return { type: "input_video" as const, video_url: location }
+    if (part.media.kind === "video") return { type: "input_video" as const, video_url: location }
     return {
       type: "input_file" as const,
       filename: part.filename ?? (mime === "application/pdf" ? "document.pdf" : "file"),
@@ -571,29 +566,10 @@ const lowerToolResultOutput = Effect.fnUntraced(function* (
 ) {
   // Text/json/error results are encoded as a plain string for backward
   // compatibility with existing cassettes and provider expectations.
-  if (part.result.type !== "content") return { output: ProviderShared.toolResultText(part), videos: [] }
-  const compatibility = ResponsesCompatibility.resolve(request.model.compatibility)
+  if (part.result.type !== "content") return ProviderShared.toolResultText(part)
   // Preserve the narrowed array element type when compiled through a consumer package.
   const content: ReadonlyArray<Content> = part.result.value
-  const output: Array<Schema.Schema.Type<typeof OpenResponsesFunctionCallOutputContent>> = []
-  const videos: MediaInput[] = []
-  for (const item of content) {
-    if (item.type === "text") {
-      output.push({ type: "input_text", text: item.text })
-      continue
-    }
-    const media = ProviderShared.toolFileMedia(item)
-    const lowered = yield* lowerMedia(media, request, adapter)
-    if (media.media.kind === "video" && compatibility.toolVideo === "user") {
-      videos.push(lowered)
-      continue
-    }
-    output.push(lowered)
-  }
-  return {
-    output: output.length === 0 && videos.length > 0 ? "Video attached in the following user message." : output,
-    videos,
-  }
+  return yield* Effect.forEach(content, (item) => lowerToolResultContentItem(item, request, adapter))
 })
 
 const DEFAULT_EFFORT = "medium"
@@ -604,14 +580,8 @@ const lowerMessages = Effect.fnUntraced(function* (
 ) {
   const input: OpenResponsesInputItem[] = []
   const providerMetadataKey = metadataKey(request.model)
-  const pendingVideos: MediaInput[] = []
-  const flushVideos = () => {
-    if (pendingVideos.length === 0) return
-    input.push({ type: "message", role: "user", content: pendingVideos.splice(0) })
-  }
 
   for (const message of request.messages) {
-    if (message.role !== "tool") flushVideos()
     const rawMetadata = message.providerMetadata?.[providerMetadataKey]
     const metadata = rawMetadata === undefined ? undefined : yield* decodeMessageMetadata(rawMetadata)
     if (message.role === "system") {
@@ -756,17 +726,14 @@ const lowerMessages = Effect.fnUntraced(function* (
     for (const part of message.content) {
       if (!ProviderShared.supportsContent(part, ["tool-result"]))
         return yield* ProviderShared.unsupportedContent(adapter.name, "tool", ["tool-result"])
-      const result = yield* lowerToolResultOutput(part, request, adapter)
       input.push({
         type: "function_call_output",
         call_id: part.id,
-        output: result.output,
+        output: yield* lowerToolResultOutput(part, request, adapter),
       })
-      pendingVideos.push(...result.videos)
     }
   }
 
-  flushVideos()
   return input
 })
 
