@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer"
 import { Effect, Option, Schema, SchemaGetter } from "effect"
 import { Tool } from "@opencode/schema/tool"
-import { MessagesCompatibility } from "../compatibility/anthropic-messages.js"
 import { Route } from "../route/client.js"
 import { Auth } from "../route/auth.js"
 import { Endpoint } from "../route/endpoint.js"
@@ -815,23 +814,13 @@ const lowerToolResultContentItem = Effect.fnUntraced(function* (item: Tool.Conte
   return yield* lowerMedia(ProviderShared.toolFileMedia(item), request)
 })
 
-const lowerToolResultContent = Effect.fnUntraced(function* (
-  part: ToolResultPart,
-  request: LLMRequest,
-  videos: AnthropicVideoBlock[],
-) {
+const lowerToolResultContent = Effect.fnUntraced(function* (part: ToolResultPart, request: LLMRequest) {
   // Text / json / error results stay as a string for backward compatibility
   // with existing cassettes and provider expectations.
   if (part.result.type !== "content") return ProviderShared.toolResultText(part)
   // Preserve the narrowed array element type when compiled through a consumer package.
   const content: ReadonlyArray<Tool.Content> = part.result.value
-  const blocks = yield* Effect.forEach(content, (item) => lowerToolResultContentItem(item, request))
-  if (MessagesCompatibility.resolve(request.model.compatibility).toolVideo !== "user") return blocks
-  return blocks.filter((block) => {
-    if (block.type !== "video") return true
-    videos.push(block)
-    return false
-  })
+  return yield* Effect.forEach(content, (item) => lowerToolResultContentItem(item, request))
 })
 
 const requireThinkingSignature = (request: LLMRequest) => {
@@ -908,7 +897,6 @@ const appendToUserTurn = (messages: AnthropicMessage[], block: AnthropicUserBloc
 
 const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, breakpoints: Cache.Breakpoints) {
   const messages: AnthropicMessage[] = []
-  const videos: AnthropicVideoBlock[] = []
   const providerMetadataKey = request.model.route.providerMetadataKey ?? request.model.provider
   // Text updates stay where they are unless a user turn follows them; then they move after the latest
   // user turn, the nearest spot where Anthropic accepts a native system message.
@@ -923,8 +911,6 @@ const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, breakpoi
   })
 
   for (const [index, message] of request.messages.entries()) {
-    // Wait for every parallel tool result before appending ordinary user content.
-    if (message.role !== "tool") videos.splice(0).forEach((video) => appendToUserTurn(messages, video))
     if (message.role === "system") {
       const update = effortUpdate(message)
       if (update) {
@@ -1024,7 +1010,7 @@ const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, breakpoi
       content.push({
         type: "tool_result",
         tool_use_id: scrubToolCallID(part.id),
-        content: yield* lowerToolResultContent(part, request, videos),
+        content: yield* lowerToolResultContent(part, request),
         is_error: part.result.type === "error" ? true : undefined,
         cache_control: cacheControl(breakpoints, part.cache),
       })
@@ -1034,7 +1020,6 @@ const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, breakpoi
       messages[messages.length - 1] = { role: "user", content: [...previous.content, ...content] }
     else messages.push({ role: "user", content })
   }
-  videos.forEach((video) => appendToUserTurn(messages, video))
   yield* releaseHeld()
 
   return messages
@@ -1423,10 +1408,7 @@ const onContentBlockDelta = Effect.fnUntraced(function* (
   return [state, NO_EVENTS] satisfies StepResult
 })
 
-const onContentBlockStop = Effect.fnUntraced(function* (
-  state: ParserState,
-  event: AnthropicEvent,
-) {
+const onContentBlockStop = Effect.fnUntraced(function* (state: ParserState, event: AnthropicEvent) {
   if (event.index === undefined) return [state, NO_EVENTS] satisfies StepResult
   if (event.index in state.compactions) {
     const { [event.index]: content, ...compactions } = state.compactions

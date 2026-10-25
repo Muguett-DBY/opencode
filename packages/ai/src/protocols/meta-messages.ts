@@ -30,6 +30,26 @@ const fromRequest = Effect.fn("MetaMessages.fromRequest")(function* (request: LL
   const body = yield* AnthropicMessages.protocol.body.from(projected.request)
   return {
     ...body,
+    messages: body.messages.map((message) => {
+      if (message.role !== "user") return message
+      const videos = message.content.flatMap((block) =>
+        block.type === "tool_result" && typeof block.content !== "string"
+          ? block.content.filter((item) => item.type === "video")
+          : [],
+      )
+      if (videos.length === 0) return message
+      return {
+        ...message,
+        content: [
+          ...message.content.map((block) =>
+            block.type === "tool_result" && typeof block.content !== "string"
+              ? { ...block, content: block.content.filter((item) => item.type !== "video") }
+              : block,
+          ),
+          ...videos,
+        ],
+      }
+    }),
     tools:
       body.tools === undefined
         ? undefined

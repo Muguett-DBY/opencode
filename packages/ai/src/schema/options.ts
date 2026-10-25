@@ -214,7 +214,6 @@ export class LanguageModelCompatibility extends Schema.Class<LanguageModelCompat
   "LLM.LanguageModelCompatibility",
 )({
   sanitizer: Schema.optional(LanguageModelSanitizerCompatibility),
-  toolVideo: Schema.optional(Schema.Literals(["nested", "user"])),
   reasoningField: Schema.optional(Schema.String),
   /** Require every assistant message to include its reasoning field, even when empty. */
   requireReasoning: Schema.optional(Schema.Boolean),

@@ -6,7 +6,6 @@ import {
   LLM,
   AIError,
   LLMRequest,
-  LanguageModel,
   Message,
   ToolCallPart,
   ToolDefinition,
@@ -861,7 +860,7 @@ describe("Anthropic Messages route", () => {
     }),
   )
 
-  it.effect("serializes Messages video by default and honors tool placement compatibility", () =>
+  it.effect("serializes Messages video by default and keeps Meta placement private", () =>
     Effect.gen(function* () {
       const video = { type: "video", source: { type: "base64", media_type: "video/mp4", data: "AAECAw==" } }
       const attachment = { type: "file" as const, uri: "data:video/mp4;base64,AAECAw==", mime: "video/mp4" }
@@ -915,7 +914,6 @@ describe("Anthropic Messages route", () => {
         ],
         cache: "none",
       })
-      expect(meta.model.compatibility?.toolVideo).toBe("user")
       const hoisted = yield* compileRequest(meta)
       expect(hoisted.body.messages).toMatchObject([
         {
@@ -937,21 +935,8 @@ describe("Anthropic Messages route", () => {
         { role: "assistant", content: [{ type: "text", text: "Observed." }] },
       ])
 
-      const generic = yield* compileRequest(
-        LLMRequest.update(meta, {
-          model: LanguageModel.update(user.model, { compatibility: { toolVideo: "user" } }),
-        }),
-      )
-      expect(generic.body.messages).toEqual(hoisted.body.messages)
-
-      const overridden = yield* compileRequest(
-        LLMRequest.update(meta, {
-          model: LanguageModel.update(meta.model, {
-            compatibility: { ...meta.model.compatibility, toolVideo: "nested" },
-          }),
-        }),
-      )
-      expect(overridden.body.messages[1]?.content).toEqual([
+      const generic = yield* compileRequest(LLMRequest.update(meta, { model: user.model }))
+      expect(generic.body.messages[1]?.content).toEqual([
         { type: "tool_result", tool_use_id: "first", content: [video] },
         { type: "tool_result", tool_use_id: "second", content: [video] },
       ])
