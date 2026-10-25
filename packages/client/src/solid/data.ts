@@ -284,6 +284,8 @@ export function createData(config: CreateDataInput) {
   )
   const messageIndex = new Map<string, Map<string, number>>()
   const sync = createSync()
+  // Teardown publishes MCP events after shutdown; a later read reactivates the location.
+  const shutdowns = new Set<string>()
   let activeUpdates: Map<string, DataSessionStatus | undefined> | undefined
   const pendingUpdates = new Map<string, Map<string, SessionInboxInfo | SessionInbox.Delivery | undefined>>()
 
@@ -1263,6 +1265,15 @@ export function createData(config: CreateDataInput) {
     if (!event.location) return
     const location = event.location
     switch (event.type) {
+      case "location.shutdown": {
+        const key = locationKey(location)
+        const timer = `mcp.status:${key}`
+        shutdowns.add(key)
+        result.location.invalidate(location)
+        clearTimeout(settling.get(timer))
+        settling.delete(timer)
+        break
+      }
       case "provider.updated":
         result.location.provider.invalidate(location)
         refresh(() => result.location.provider.sync(location))
@@ -1343,14 +1354,28 @@ export function createData(config: CreateDataInput) {
       // Authenticating an MCP integration reconnects its server, which emits mcp.status.changed,
       // so the mcp list syncs here rather than off integration.updated. The server emits one event
       // per MCP server as each settles, so a location booting nine servers emitted nine refetches.
-      case "mcp.status.changed":
+      case "mcp.status.changed": {
+        const key = locationKey(location)
+        if (
+          shutdowns.has(key) ||
+          (result.location.mcp.server.list(location) === undefined && !sync.has(`location.mcpServer:${key}`))
+        )
+          break
         result.location.mcp.server.invalidate(location)
-        settle(`mcp.status:${locationKey(location)}`, () => result.location.mcp.server.sync(location))
+        settle(`mcp.status:${key}`, () => result.location.mcp.server.sync(location))
         break
-      case "mcp.resources.changed":
+      }
+      case "mcp.resources.changed": {
+        const key = locationKey(location)
+        if (
+          shutdowns.has(key) ||
+          (result.location.mcp.resource.list(location) === undefined && !sync.has(`location.mcpResource:${key}`))
+        )
+          break
         result.location.mcp.resource.invalidate(location)
         refresh(() => result.location.mcp.resource.sync(location))
         break
+      }
     }
   }
 
@@ -1377,6 +1402,7 @@ export function createData(config: CreateDataInput) {
       sync: (ref?: LocationRef) => {
         const location = ref ?? defaultLocation()
         const id = locationKey(location)
+        shutdowns.delete(id)
         return sync.run(`location.${field}:${id}`, async () => {
           const response = await load(locationQuery(location))
           const key = locationKey(response.location)
@@ -1945,6 +1971,7 @@ export function createData(config: CreateDataInput) {
       },
       syncInfo(ref?: LocationRef) {
         const current = ref ?? defaultLocation()
+        shutdowns.delete(locationKey(current))
         return sync.run(`location:${locationKey(current)}`, async () => {
           const location = await api().location.get({ location: locationQuery(current) })
           const key = locationKey(location)
