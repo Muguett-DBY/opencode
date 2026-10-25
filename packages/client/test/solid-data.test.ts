@@ -1336,6 +1336,36 @@ test("does not reactivate a location when an older MCP read finishes after shutd
   }
 })
 
+test.each(mcpEvents)("does not run a queued MCP reload after shutdown (%s)", async (type) => {
+  const requested = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  let reads = 0
+  const setup = mcpFixture(async () => {
+    if (++reads !== 1) return
+    requested.resolve()
+    await release.promise
+  })
+  const catalog = type === "mcp.status.changed" ? setup.data.location.mcp.server : setup.data.location.mcp.resource
+  const path = type === "mcp.status.changed" ? "/api/mcp" : "/api/mcp/resource"
+  const load = catalog.sync()
+  try {
+    await requested.promise
+    setup.emit(type)
+    await setup.flush()
+    setup.emit("location.shutdown")
+    release.resolve()
+    await load
+    await setup.flush()
+    expect(setup.requests).toEqual([`${path}:/project`])
+    await catalog.sync()
+    expect(setup.requests).toEqual([`${path}:/project`, `${path}:/project`])
+  } finally {
+    release.resolve()
+    await load
+    setup.dispose()
+  }
+})
+
 test("revalidates when an MCP event overtakes the first catalog read", async () => {
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()

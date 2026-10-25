@@ -1404,6 +1404,11 @@ export function createData(config: CreateDataInput) {
         const id = locationKey(location)
         shutdowns.delete(id)
         return sync.run(`location.${field}:${id}`, async () => {
+          // A reload queued behind an older read may outlive the location.
+          if (shutdowns.has(id)) {
+            sync.invalidate(`location.${field}:${id}`)
+            return
+          }
           const response = await load(locationQuery(location))
           const key = locationKey(response.location)
           publish(key, response.data)
